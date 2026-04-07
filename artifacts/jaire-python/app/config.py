@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     web3auth_client_id: str = ""
     web3auth_node_factor_key: str = ""
 
+    mpc_sidecar_url: str = "http://localhost:9000"
+
     openai_api_key: str = ""
 
     payment_provider: str = "paystack"
