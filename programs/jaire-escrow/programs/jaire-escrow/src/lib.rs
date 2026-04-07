@@ -130,27 +130,33 @@ pub mod jaire_escrow {
     /// If the user leaves early, they are refunded for unused hours (rounded down).
     /// The fee split is: host 85 %, JaIre treasury 15 %.
     pub fn check_out(ctx: Context<CheckOut>) -> Result<()> {
-        let session = &mut ctx.accounts.session;
-        require!(session.is_active, JaireError::SessionNotActive);
+        require!(ctx.accounts.session.is_active, JaireError::SessionNotActive);
 
         let clock = Clock::get()?;
+
+        // ── Read all session/workspace values we need before any mutable borrows ──
+        let check_in_ts = ctx.accounts.session.check_in_ts;
+        let planned_hours = ctx.accounts.session.planned_hours;
+        let deposit_usdc = ctx.accounts.session.deposit_usdc;
+        let session_bump = ctx.accounts.session.bump;
+        let session_user = ctx.accounts.session.user;
+        let workspace_key = ctx.accounts.workspace.key();
+        let hourly_rate = ctx.accounts.workspace.hourly_rate_usdc;
+
         let elapsed_secs = clock.unix_timestamp
-            .checked_sub(session.check_in_ts)
+            .checked_sub(check_in_ts)
             .ok_or(JaireError::MathOverflow)?
             .max(0);
 
-        let ws = &mut ctx.accounts.workspace;
-        let hourly_rate = ws.hourly_rate_usdc;
-
         // Billable hours (rounded up to nearest hour, capped at planned)
         let elapsed_hours = ((elapsed_secs + 3_599) / 3_600) as u64;
-        let billable_hours = elapsed_hours.min(session.planned_hours as u64);
+        let billable_hours = elapsed_hours.min(planned_hours as u64);
         let billable_usdc = hourly_rate
             .checked_mul(billable_hours)
             .ok_or(JaireError::MathOverflow)?
-            .min(session.deposit_usdc);
+            .min(deposit_usdc);
 
-        let refund_usdc = session.deposit_usdc.saturating_sub(billable_usdc);
+        let refund_usdc = deposit_usdc.saturating_sub(billable_usdc);
 
         let host_amount = billable_usdc
             .checked_mul(HOST_SHARE_BPS)
@@ -162,14 +168,12 @@ pub mod jaire_escrow {
             .ok_or(JaireError::MathOverflow)?
             / BPS_DENOMINATOR;
 
-        // PDA signer seeds for escrow
-        let workspace_key = ws.key();
-        let user_key = session.user;
+        // PDA signer seeds — session PDA is the escrow authority
         let seeds: &[&[u8]] = &[
             b"session",
             workspace_key.as_ref(),
-            user_key.as_ref(),
-            &[session.bump],
+            session_user.as_ref(),
+            &[session_bump],
         ];
         let signer = &[seeds];
 
@@ -224,18 +228,21 @@ pub mod jaire_escrow {
             )?;
         }
 
+        // ── Now mutably update state ──
+        let ws = &mut ctx.accounts.workspace;
         ws.active_sessions = ws.active_sessions.saturating_sub(1);
         ws.total_revenue_usdc = ws
             .total_revenue_usdc
             .saturating_add(host_amount + treasury_amount);
 
+        let session = &mut ctx.accounts.session;
         session.is_active = false;
         let check_out_ts = clock.unix_timestamp;
 
         emit!(UserCheckedOut {
             session: session.key(),
-            user: session.user,
-            workspace: ws.key(),
+            user: session_user,
+            workspace: workspace_key,
             billable_usdc,
             host_amount,
             treasury_amount,
