@@ -1,3 +1,4 @@
+import http from "http";
 import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
@@ -25,7 +26,34 @@ app.use(
     },
   }),
 );
+
 app.use(cors());
+
+// Forward all /jaire/* requests to the Python FastAPI service on port 8000.
+// This proxy runs BEFORE body parsers so webhook HMAC verification gets the raw body.
+app.use("/jaire", (req, res) => {
+  const options: http.RequestOptions = {
+    hostname: "localhost",
+    port: 8000,
+    path: req.originalUrl,
+    method: req.method,
+    headers: { ...req.headers, host: "localhost:8000" },
+  };
+
+  const proxyReq = http.request(options, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+    proxyRes.pipe(res, { end: true });
+  });
+
+  proxyReq.on("error", () => {
+    if (!res.headersSent) {
+      res.status(502).json({ error: "JaIre Python service unavailable" });
+    }
+  });
+
+  req.pipe(proxyReq, { end: true });
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
