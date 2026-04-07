@@ -1,0 +1,13 @@
+JaIre is a high-throughput Web2.5 Workspace Management Ecosystem built on the Solana blockchain. It leverages a hybrid architecture to combine the seamless onboarding of Web2 with the trustless financial rails of Web3.
+## Technical Architecture Overview
+
+* Blockchain Layer (Solana/Rust): A custom Anchor-based program manages the core financial logic. It utilizes a Streaming Escrow model where funds are locked in a Program Derived Address (PDA) upon check-in. To maximize capital efficiency, these idle funds are deposited into Solend via Cross-Program Invocation (CPI) to earn yield. At check-out, the program calculates a "Pay-per-Second" fee and executes an atomic split: 85% to the host and 15% to the JaIre treasury.
+* Infrastructure & Custody (Web3Auth MPC): JaIre implements a non-custodial, keyless onboarding flow. Using the Web3Auth MPC Core Kit, the system splits the user's private key into multiple shares. The backend (Python) holds a Factor Key (stored in a hardware security module or secret manager) which allows it to programmatically sign transactions triggered by off-chain events without ever reconstructing the full private key on a single server.
+* Payments & On-Ramp (Roqqu/Paystack): The platform uses Roqqu as the primary local liquidity gateway. A Python-based Webhook Listener monitors Roqqu/Paystack for successful fiat deposits. Upon verification, the backend triggers the MPC vault to "mint" or transfer the equivalent USDC/cNGN to the user’s invisible Solana wallet, maintaining a real-time local currency display on the frontend.
+* AI & Automation (Jaie Agent): Jaie is a conversational AI agent built with LangGraph and the Solana Agent Kit. It functions as a "Reasoning Loop" that interprets natural language via OpenAI’s GPT-4o, executes real-time workspace availability checks, and autonomously broadcasts booking transactions to the blockchain.
+* Hardware Layer (MQTT/IoT): Smart plugs at each workspace communicate with the Python backend via MQTT over mTLS. Power is toggled only when the Solana program confirms a valid check_in state, creating a physical-digital handshake.
+
+## The "Web2.5" UI/UX
+The frontend (React) is designed with a Golden Yellow, Sky Blue, and Purple palette, completely abstracting blockchain complexities. Users interact with "Local Balances" and "Live Timers," while all gas fees and signatures are abstracted via the MPC backend, ensuring a zero-friction experience for non-technical users.
+Should we start by drafting the specific "Check-In" instruction for the Rust smart contract?
+
