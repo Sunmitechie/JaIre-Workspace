@@ -147,6 +147,7 @@ async def process_payment(
     provider: str = "paystack",
     is_test_mode: bool = False,
     user_name: Optional[str] = None,
+    mint_override: Optional[str] = None,
 ) -> JairePayment:
     existing_stmt = select(JairePayment).where(
         JairePayment.payment_reference == payment_reference
@@ -188,12 +189,15 @@ async def process_payment(
     else:
         try:
             solana_svc = get_solana_service()
-            signature = await solana_svc.transfer_usdc(wallet.pubkey, amount_usdc)
+            # Submit transaction and return immediately; confirmation runs in background
+            signature = await solana_svc.submit_transaction_and_return(
+                wallet.pubkey, amount_usdc, mint_pubkey_str=mint_override
+            )
             payment.tx_signature = signature
-            payment.status = "completed"
+            payment.status = "pending_confirmation"
             links = _explorer_links(signature, is_simulated=False)
             logger.info(
-                f"Payment {payment.id} completed. "
+                f"Payment {payment.id} submitted (pending confirmation). "
                 f"Tx: {signature} | Solscan: {links['solscan']}"
             )
         except Exception as e:

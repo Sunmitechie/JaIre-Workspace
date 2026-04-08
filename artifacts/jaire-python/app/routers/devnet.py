@@ -1,11 +1,13 @@
 import logging
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import get_db
 from app.services.solana_service import get_solana_service
-from app.services.devnet_setup import get_devnet_setup
+from app.services.devnet_setup import get_devnet_setup, set_test_mint, get_test_mint
 
 router = APIRouter(tags=["devnet"])
 logger = logging.getLogger(__name__)
@@ -25,6 +27,17 @@ class MintUsdcRequest(BaseModel):
     recipient: str
     amount_usdc: float = 10.0
     mint_pubkey: Optional[str] = None
+
+
+class RegisterMintRequest(BaseModel):
+    mint_pubkey: str
+
+
+class LivePaymentRequest(BaseModel):
+    user_identifier: str
+    amount_ngn: float
+    mint_pubkey: str
+    user_name: Optional[str] = None
 
 
 @router.get("/jaire/devnet/treasury")
@@ -122,6 +135,78 @@ async def get_balance(pubkey: str):
             "sol_balance": sol,
             "usdc_balance": usdc,
             "network": settings.solana_network,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/jaire/devnet/setup/register-mint")
+async def register_existing_mint(body: RegisterMintRequest):
+    """
+    Register an existing SPL mint address (no new on-chain transaction).
+    Use this when the mint was already created in a previous session.
+    """
+    _require_devnet()
+    set_test_mint(body.mint_pubkey)
+    return {
+        "registered_mint": body.mint_pubkey,
+        "status": "active",
+        "note": "Mint registered. Use POST /jaire/devnet/setup/mint-usdc to issue tokens.",
+    }
+
+
+@router.get("/jaire/devnet/setup/current-mint")
+async def get_current_mint():
+    """Return the currently active test mint address."""
+    _require_devnet()
+    mint = get_test_mint()
+    return {
+        "test_mint": mint,
+        "registered": mint is not None,
+    }
+
+
+@router.post("/jaire/devnet/live-payment")
+async def live_on_chain_payment(
+    body: LivePaymentRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Perform a REAL on-chain SPL token transfer (devnet only).
+    The treasury sends test-USDC to the user's wallet for the given NGN amount.
+    Treasury must already hold tokens for the specified mint.
+    """
+    _require_devnet()
+    try:
+        from app.services import payment_service
+
+        # Ensure user + wallet exist
+        payment = await payment_service.process_payment(
+            db=db,
+            user_identifier=body.user_identifier,
+            amount_ngn=body.amount_ngn,
+            payment_reference=f"LIVE-DEVNET-{body.user_identifier[:8].upper()}",
+            provider="test",
+            is_test_mode=False,
+            user_name=body.user_name,
+            mint_override=body.mint_pubkey,
+        )
+
+        return {
+            "payment_id": str(payment.id),
+            "status": payment.status,
+            "amount_ngn": float(payment.amount_ngn),
+            "amount_usdc": float(payment.amount_usdc),
+            "exchange_rate": float(payment.exchange_rate),
+            "tx_signature": payment.tx_signature,
+            "is_test_mode": False,
+            "network": "devnet",
+            "mint_used": body.mint_pubkey,
+            "explorer": {
+                "solana_explorer": f"https://explorer.solana.com/tx/{payment.tx_signature}?cluster=devnet",
+                "solscan": f"https://solscan.io/tx/{payment.tx_signature}?cluster=devnet",
+                "solana_fm": f"https://solana.fm/tx/{payment.tx_signature}?cluster=devnet-solana",
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

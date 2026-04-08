@@ -11,13 +11,13 @@ from typing import Optional
 
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
-from solders.instruction import Instruction, AccountMeta
 from solders.message import Message
 from solders.transaction import Transaction
 from solders.system_program import create_account, CreateAccountParams
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
+from spl.token.instructions import initialize_mint, InitializeMintParams
 
 from app.config import settings
 from app.services.solana_service import (
@@ -25,8 +25,8 @@ from app.services.solana_service import (
     get_solana_service,
     get_ata_address,
     build_create_ata_instruction,
+    build_mint_to_instruction,
     TOKEN_PROGRAM_ID,
-    ATA_PROGRAM_ID,
     SYSTEM_PROGRAM_ID,
     SYSVAR_RENT_PUBKEY,
     USDC_DECIMALS,
@@ -39,42 +39,21 @@ logger = logging.getLogger(__name__)
 _TEST_MINT_PUBKEY: Optional[str] = None
 
 
-def build_initialize_mint_instruction(
+def _build_initialize_mint_instruction(
     mint: Pubkey,
     decimals: int,
     mint_authority: Pubkey,
     freeze_authority: Optional[Pubkey] = None,
-) -> Instruction:
-    """Build an InitializeMint instruction (Token program v1)."""
-    freeze_bytes = bytes(freeze_authority) if freeze_authority else bytes(32)
-    has_freeze = 1 if freeze_authority else 0
-    data = struct.pack("<B", 0) + struct.pack("<B", decimals) + bytes(mint_authority) + bytes([has_freeze]) + freeze_bytes
-    return Instruction(
-        program_id=TOKEN_PROGRAM_ID,
-        accounts=[
-            AccountMeta(pubkey=mint, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=SYSVAR_RENT_PUBKEY, is_signer=False, is_writable=False),
-        ],
-        data=data,
-    )
-
-
-def build_mint_to_instruction(
-    mint: Pubkey,
-    dest: Pubkey,
-    mint_authority: Pubkey,
-    amount: int,
-) -> Instruction:
-    """Build a MintTo instruction."""
-    data = bytes([7]) + struct.pack("<Q", amount)
-    return Instruction(
-        program_id=TOKEN_PROGRAM_ID,
-        accounts=[
-            AccountMeta(pubkey=mint, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=dest, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=mint_authority, is_signer=True, is_writable=False),
-        ],
-        data=data,
+):
+    """Build an InitializeMint instruction using the SPL token library."""
+    return initialize_mint(
+        InitializeMintParams(
+            program_id=TOKEN_PROGRAM_ID,
+            mint=mint,
+            decimals=decimals,
+            mint_authority=mint_authority,
+            freeze_authority=freeze_authority,
+        )
     )
 
 
@@ -134,7 +113,7 @@ class DevnetSetupService:
             owner=TOKEN_PROGRAM_ID,
         ))
 
-        init_mint_ix = build_initialize_mint_instruction(
+        init_mint_ix = _build_initialize_mint_instruction(
             mint=mint_pubkey,
             decimals=USDC_DECIMALS,
             mint_authority=self.treasury_pubkey,
@@ -207,3 +186,14 @@ def get_devnet_setup() -> DevnetSetupService:
     if _devnet_setup is None:
         _devnet_setup = DevnetSetupService(get_solana_service())
     return _devnet_setup
+
+
+def set_test_mint(mint_pubkey_str: str) -> None:
+    """Register an already-created mint address (e.g., one created in a previous session)."""
+    global _TEST_MINT_PUBKEY
+    _TEST_MINT_PUBKEY = mint_pubkey_str
+    logger.info(f"Registered existing test mint: {mint_pubkey_str}")
+
+
+def get_test_mint() -> Optional[str]:
+    return _TEST_MINT_PUBKEY

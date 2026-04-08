@@ -4,12 +4,19 @@ from typing import Optional
 
 from solders.pubkey import Pubkey
 from solders.keypair import Keypair
-from solders.instruction import Instruction, AccountMeta
 from solders.message import Message
 from solders.transaction import Transaction
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed, Finalized
 from solana.rpc.types import TxOpts
+from spl.token.instructions import (
+    create_associated_token_account,
+    get_associated_token_address,
+    transfer as spl_transfer,
+    TransferParams,
+    mint_to as spl_mint_to,
+    MintToParams,
+)
 
 from app.config import settings
 
@@ -17,48 +24,42 @@ logger = logging.getLogger(__name__)
 
 USDC_MINT_DEVNET = Pubkey.from_string("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-ATA_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe8bXh")
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 SYSVAR_RENT_PUBKEY = Pubkey.from_string("SysvarRent111111111111111111111111111111111")
 USDC_DECIMALS = 6
 
 
 def get_ata_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
-    seeds = [bytes(owner), bytes(TOKEN_PROGRAM_ID), bytes(mint)]
-    ata, _ = Pubkey.find_program_address(seeds, ATA_PROGRAM_ID)
-    return ata
+    return get_associated_token_address(owner, mint)
 
 
-def build_create_ata_instruction(payer: Pubkey, ata: Pubkey, owner: Pubkey, mint: Pubkey) -> Instruction:
-    return Instruction(
-        accounts=[
-            AccountMeta(pubkey=payer, is_signer=True, is_writable=True),
-            AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=owner, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=mint, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=SYSTEM_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
-        ],
-        program_id=ATA_PROGRAM_ID,
-        data=bytes([]),
+def build_create_ata_instruction(payer: Pubkey, ata: Pubkey, owner: Pubkey, mint: Pubkey):
+    return create_associated_token_account(payer, owner, mint)
+
+
+def build_spl_transfer_instruction(source_ata: Pubkey, dest_ata: Pubkey, owner: Pubkey, amount: int):
+    return spl_transfer(
+        TransferParams(
+            program_id=TOKEN_PROGRAM_ID,
+            source=source_ata,
+            dest=dest_ata,
+            owner=owner,
+            amount=amount,
+            signers=[],
+        )
     )
 
 
-def build_spl_transfer_instruction(
-    source_ata: Pubkey,
-    dest_ata: Pubkey,
-    owner: Pubkey,
-    amount: int,
-) -> Instruction:
-    data = bytes([3]) + amount.to_bytes(8, "little")
-    return Instruction(
-        accounts=[
-            AccountMeta(pubkey=source_ata, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=dest_ata, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=owner, is_signer=True, is_writable=False),
-        ],
-        program_id=TOKEN_PROGRAM_ID,
-        data=data,
+def build_mint_to_instruction(mint: Pubkey, dest: Pubkey, mint_authority: Pubkey, amount: int):
+    return spl_mint_to(
+        MintToParams(
+            program_id=TOKEN_PROGRAM_ID,
+            mint=mint,
+            dest=dest,
+            mint_authority=mint_authority,
+            amount=amount,
+            signers=[],
+        )
     )
 
 
@@ -112,22 +113,34 @@ class SolanaService:
         resp = await self.client.get_account_info(ata, commitment=Confirmed)
         return resp.value is not None
 
-    async def transfer_usdc(self, recipient_pubkey_str: str, amount_usdc: float) -> str:
+    async def transfer_usdc(
+        self,
+        recipient_pubkey_str: str,
+        amount_usdc: float,
+        mint_pubkey_str: Optional[str] = None,
+    ) -> str:
         recipient = Pubkey.from_string(recipient_pubkey_str)
         treasury = self.treasury_keypair.pubkey()
 
-        treasury_ata = get_ata_address(treasury, USDC_MINT_DEVNET)
-        recipient_ata = get_ata_address(recipient, USDC_MINT_DEVNET)
+        # Use supplied mint or fall back to devnet USDC
+        if mint_pubkey_str:
+            mint = Pubkey.from_string(mint_pubkey_str)
+            logger.info(f"Using custom mint: {mint_pubkey_str}")
+        else:
+            mint = USDC_MINT_DEVNET
+
+        treasury_ata = get_ata_address(treasury, mint)
+        recipient_ata = get_ata_address(recipient, mint)
 
         instructions = []
 
-        recipient_ata_exists = await self.ata_exists(recipient, USDC_MINT_DEVNET)
+        recipient_ata_exists = await self.ata_exists(recipient, mint)
         if not recipient_ata_exists:
             create_ata_ix = build_create_ata_instruction(
                 payer=treasury,
                 ata=recipient_ata,
                 owner=recipient,
-                mint=USDC_MINT_DEVNET,
+                mint=mint,
             )
             instructions.append(create_ata_ix)
             logger.info(f"Will create ATA for recipient: {recipient_ata}")
@@ -169,7 +182,7 @@ class SolanaService:
             "rpc": self.rpc_url,
         }
 
-    async def _confirm_transaction(self, signature: str, max_attempts: int = 30):
+    async def _confirm_transaction(self, signature: str, max_attempts: int = 60, poll_interval: float = 2.0):
         from solders.signature import Signature
         sig = Signature.from_string(signature)
         for attempt in range(max_attempts):
@@ -178,10 +191,65 @@ class SolanaService:
                 status = resp.value[0]
                 if status.err:
                     raise RuntimeError(f"Transaction failed: {status.err}")
-                if status.confirmation_status in ("confirmed", "finalized"):
+                # confirmation_status may be an enum; compare via str()
+                cs = str(status.confirmation_status).lower()
+                if "confirmed" in cs or "finalized" in cs:
+                    logger.info(f"Transaction {signature[:20]}... confirmed after {attempt * poll_interval:.0f}s")
                     return
-            await asyncio.sleep(1)
-        raise TimeoutError(f"Transaction {signature} not confirmed after {max_attempts}s")
+            await asyncio.sleep(poll_interval)
+        raise TimeoutError(f"Transaction {signature} not confirmed after {max_attempts * poll_interval:.0f}s")
+
+    async def submit_transaction_and_return(
+        self,
+        recipient_pubkey_str: str,
+        amount_usdc: float,
+        mint_pubkey_str: Optional[str] = None,
+    ) -> str:
+        """
+        Submit a USDC transfer transaction and return the signature immediately.
+        Confirmation happens asynchronously in the background.
+        """
+        recipient = Pubkey.from_string(recipient_pubkey_str)
+        treasury = self.treasury_keypair.pubkey()
+
+        mint = Pubkey.from_string(mint_pubkey_str) if mint_pubkey_str else USDC_MINT_DEVNET
+        treasury_ata = get_ata_address(treasury, mint)
+        recipient_ata = get_ata_address(recipient, mint)
+
+        instructions = []
+        recipient_ata_exists = await self.ata_exists(recipient, mint)
+        if not recipient_ata_exists:
+            instructions.append(create_associated_token_account(treasury, recipient, mint))
+            logger.info(f"Will create ATA for recipient: {recipient_ata}")
+
+        raw_amount = int(amount_usdc * (10 ** USDC_DECIMALS))
+        instructions.append(
+            spl_transfer(
+                TransferParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    source=treasury_ata,
+                    dest=recipient_ata,
+                    owner=treasury,
+                    amount=raw_amount,
+                    signers=[],
+                )
+            )
+        )
+
+        blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
+        recent_blockhash = blockhash_resp.value.blockhash
+        msg = Message.new_with_blockhash(instructions, treasury, recent_blockhash)
+        tx = Transaction([self.treasury_keypair], msg, recent_blockhash)
+
+        resp = await self.client.send_transaction(
+            tx, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+        )
+        signature = str(resp.value)
+        logger.info(f"USDC transfer submitted: {signature}")
+
+        # Fire-and-forget confirmation in background
+        asyncio.create_task(self._confirm_transaction(signature))
+        return signature
 
     async def close(self):
         await self.client.close()
