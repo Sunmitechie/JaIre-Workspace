@@ -1,16 +1,38 @@
 import { Link, useLocation } from "wouter";
-import { Building2, History, MessageSquare, Activity, LogOut, Menu, X, User } from "lucide-react";
+import { Building2, History, MessageSquare, Activity, LogOut, Menu, X, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { getUser, clearUser } from "@/lib/auth";
 import { useLocation as useWouterLocation } from "wouter";
+import { WalletPanel } from "@/components/wallet-panel";
+import { formatNGN } from "@/lib/currency";
+
+const NGN_PER_USDC = 1600;
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [, setLocation] = useWouterLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [walletOpen, setWalletOpen] = useState(false);
+  const [usdcBalance, setUsdcBalance] = useState<number | null>(null);
   const user = getUser();
+
+  useEffect(() => {
+    if (!user?.walletAddress) return;
+    let mounted = true;
+    const fetchBalance = async () => {
+      try {
+        const res = await fetch(`/jaire/devnet/balance/${user.walletAddress}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (mounted) setUsdcBalance(data.usdc_balance ?? 0);
+      } catch {}
+    };
+    fetchBalance();
+    const interval = setInterval(fetchBalance, 15000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [user?.walletAddress]);
 
   const handleSignOut = () => {
     clearUser();
@@ -28,7 +50,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans">
-      <header className="sticky top-0 z-50 w-full border-b border-white/6 bg-background/80 backdrop-blur-xl">
+      <header className="sticky top-0 z-40 w-full border-b border-white/6 bg-background/80 backdrop-blur-xl">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-8">
             <Link href={user ? "/baire" : "/"} className="flex items-center gap-2.5 group">
@@ -69,15 +91,31 @@ export function Layout({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {user ? (
               <>
-                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/4 border border-white/8">
-                  <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
-                    <User className="w-3 h-3 text-primary" />
+                {user.walletAddress && (
+                  <button
+                    onClick={() => setWalletOpen(true)}
+                    className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all hover:scale-[1.02]"
+                    style={{ background: "rgba(255,170,0,0.08)", border: "1px solid rgba(255,170,0,0.2)" }}
+                  >
+                    <Wallet className="w-3.5 h-3.5 text-primary" />
+                    <span className="text-sm font-medium text-primary">
+                      {usdcBalance !== null
+                        ? formatNGN(usdcBalance * NGN_PER_USDC)
+                        : "···"}
+                    </span>
+                  </button>
+                )}
+
+                <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/4 border border-white/8">
+                  <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
+                    <span className="text-[9px] font-bold text-primary">{user.name[0]}</span>
                   </div>
                   <span className="text-sm font-medium text-foreground/80">{user.name.split(" ")[0]}</span>
                 </div>
+
                 <Button
                   variant="ghost"
                   size="sm"
@@ -87,6 +125,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <LogOut className="w-3.5 h-3.5" />
                   Sign out
                 </Button>
+
                 <Button
                   variant="ghost"
                   size="icon"
@@ -117,6 +156,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
         {isMobileMenuOpen && user && (
           <div className="md:hidden border-t border-white/6 bg-card/95 backdrop-blur-xl p-4 flex flex-col gap-1">
+            {user.walletAddress && (
+              <button
+                onClick={() => { setWalletOpen(true); setIsMobileMenuOpen(false); }}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium mb-1"
+                style={{ background: "rgba(255,170,0,0.08)", border: "1px solid rgba(255,170,0,0.2)" }}
+              >
+                <Wallet className="w-4 h-4 text-primary" />
+                <span className="text-primary font-semibold">
+                  {usdcBalance !== null ? formatNGN(usdcBalance * NGN_PER_USDC) : "Wallet"}
+                </span>
+                <span className="ml-auto text-xs text-muted-foreground">Top Up</span>
+              </button>
+            )}
             {navLinks.map((link) => {
               const Icon = link.icon;
               const isActive = location.startsWith(link.href);
@@ -153,6 +205,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <main className="flex-1 flex flex-col relative">
         {children}
       </main>
+
+      {walletOpen && <WalletPanel onClose={() => setWalletOpen(false)} />}
     </div>
   );
 }

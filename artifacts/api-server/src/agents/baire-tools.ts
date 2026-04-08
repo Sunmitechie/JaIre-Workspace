@@ -200,10 +200,57 @@ export const getJaireInfoTool = new DynamicStructuredTool({
   },
 });
 
+export const createBookingTool = new DynamicStructuredTool({
+  name: "create_booking",
+  description: "Actually create and confirm a booking for the user. Use this when the user says 'book it', 'confirm', 'go ahead', or explicitly asks to make a booking. Always confirm the workspace and duration before booking.",
+  schema: z.object({
+    workspace_id: z.string().describe("The workspace ID (e.g. ws-001)"),
+    planned_duration_hours: z.number().describe("How many hours to book"),
+    user_name: z.string().optional().describe("User's name for the booking"),
+    user_email: z.string().optional().describe("User's email for the booking"),
+  }),
+  func: async ({ workspace_id, planned_duration_hours, user_name, user_email }) => {
+    try {
+      const response = await fetch("http://localhost:8080/api/bookings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_id,
+          planned_duration_hours,
+          payment_method: "usdc_wallet",
+          user_name: user_name ?? "JaIre Guest",
+          user_email: user_email ?? undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})) as Record<string, unknown>;
+        return JSON.stringify({ error: `Booking failed: ${(err as any).error ?? response.status}` });
+      }
+
+      const booking = await response.json() as Record<string, unknown>;
+      return JSON.stringify({
+        success: true,
+        booking_id: booking["id"],
+        workspace_name: booking["workspace_name"],
+        status: booking["status"],
+        check_in_time: booking["check_in_time"],
+        planned_hours: booking["planned_duration_hours"],
+        ngn_amount: booking["ngn_amount_paid"],
+        escrowed_usdc: booking["escrow_amount_usdc"],
+        message: `Booking confirmed! Your session at ${booking["workspace_name"]} has started. USDC is escrowed and you'll only be charged for the exact time you use.`,
+      });
+    } catch (err: any) {
+      return JSON.stringify({ error: `Could not create booking: ${err?.message}` });
+    }
+  },
+});
+
 export const baireTools = [
   listWorkspacesTool,
   calculateBookingPriceTool,
   checkWalletBalanceTool,
   getExchangeRateTool,
   getJaireInfoTool,
+  createBookingTool,
 ];

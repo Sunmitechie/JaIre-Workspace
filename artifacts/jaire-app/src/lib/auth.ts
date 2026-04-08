@@ -5,6 +5,9 @@ export interface JaireUser {
   avatar: string;
   provider: "google" | "twitter" | "apple" | "email";
   walletAddress?: string;
+  walletNetwork?: string;
+  walletCreatedAt?: string;
+  idToken?: string;
 }
 
 const KEY = "jaire_user";
@@ -21,6 +24,11 @@ export function getUser(): JaireUser | null {
 
 export function saveUser(user: JaireUser) {
   localStorage.setItem(KEY, JSON.stringify(user));
+}
+
+export function updateUser(patch: Partial<JaireUser>) {
+  const user = getUser();
+  if (user) saveUser({ ...user, ...patch });
 }
 
 export function clearUser() {
