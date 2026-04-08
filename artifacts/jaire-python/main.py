@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import engine, Base
-from app.routers import health, webhooks, wallet, devnet
+from app.routers import health, webhooks, wallet, devnet, sessions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,3 +49,4 @@ app.include_router(health.router)
 app.include_router(webhooks.router)
 app.include_router(wallet.router)
 app.include_router(devnet.router)
+app.include_router(sessions.router)

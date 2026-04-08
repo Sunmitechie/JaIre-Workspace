@@ -178,12 +178,55 @@ Baire is JaIre's voice-to-voice AI concierge built on LangGraph + gpt-5.2 via Re
 
 ---
 
+## Session Escrow + Kamino Finance (COMPLETE)
+
+Real-time second-precision escrow with Kamino yield on idle USDC.
+
+**Escrow flow:**
+1. **Check-in**: `original_amount = hourly_rate × planned_hours` USDC → treasury (escrow keeper) → Kamino deposit
+2. **Real-time**: Second counter ticks; `current_cost = hourly_rate × elapsed_seconds / 3600`
+3. **Check-out**: Kamino withdrawal (principal + yield) → split:
+   - `time_cost × 0.85` → host payment
+   - `time_cost × 0.15` → treasury
+   - `original_amount - time_cost` → user refund (if ≥ 0.001 USDC)
+   - Kamino yield → **treasury only** (0% to host or user)
+
+**Files:**
+- `artifacts/jaire-python/app/services/session_service.py` — Session lifecycle (check-in, real-time, check-out)
+- `artifacts/jaire-python/app/services/kamino_service.py` — Kamino integration (simulated devnet, mainnet hook)
+- `artifacts/jaire-python/app/routers/sessions.py` — Session API routes
+- `artifacts/jaire-python/app/schemas/session.py` — Pydantic schemas
+- `programs/jaire-escrow/programs/jaire-escrow/src/lib.rs` — Updated Anchor program (second-precision)
+
+**Session API Endpoints:**
+- `POST /jaire/session/check-in` — Check in, lock USDC in Kamino
+- `GET /jaire/session/:id/status` — Real-time elapsed + cost (call every second)
+- `POST /jaire/session/:id/check-out` — Settle: split, refund, harvest yield
+- `GET /jaire/session/:id` — Full session record
+- `GET /jaire/sessions/user/:identifier` — User's session history
+
+**Kamino:**
+- Devnet: 5% APY simulated (configurable via `KAMINO_SIMULATED_APY` env var)
+- Mainnet: Hook in `kamino_service.py` `deposit_to_kamino()` / `withdraw_from_kamino()`
+  - Program: `KLend2g3cZ87astpptFc4HcnKoGmJ7aSRrBDVH9tVSN`
+
+**Anchor Program changes (v2 — second precision):**
+- `per_second_rate_usdc` replaces `hourly_rate_usdc` (rate stored per second in atomic units)
+- `planned_seconds: u64` replaces `planned_hours: u8`
+- Billing exact to-the-second, no rounding up
+- `DUST_THRESHOLD = 1000` atomic units (0.001 USDC) — below this, no refund sent
+- Kamino yield settlement is off-chain (treasury sweeps separately)
+
+**DB Table:** `jaire_sessions` — all session fields including Kamino position tracking
+
+---
+
 ## Next Steps
 
 - [ ] Jaie Analytics (text-to-text, host-facing CRO dashboard)
 - [ ] React frontend (Golden Yellow + Sky Blue + Purple, fintech design)
 - [ ] Web3Auth MPC integration into payment flow
 - [ ] Roqqu direct integration (requires published website URL)
-- [ ] Kamino Finance yield on idle USDC
 - [ ] Solana Blinks for social media booking
 - [ ] IoT smart plug access control
+- [ ] Kamino mainnet integration (klend-sdk)

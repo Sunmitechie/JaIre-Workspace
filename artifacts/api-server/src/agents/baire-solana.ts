@@ -14,7 +14,14 @@ function getSolanaAgentKit(): SolanaAgentKit | null {
   }
 
   try {
-    const privateKeyBytes = bs58.decode(privateKeyB58);
+    let privateKeyBytes: Uint8Array;
+    if (/^[0-9a-fA-F]{128}$/.test(privateKeyB58)) {
+      privateKeyBytes = Uint8Array.from(Buffer.from(privateKeyB58, "hex"));
+    } else if (/^\[/.test(privateKeyB58)) {
+      privateKeyBytes = Uint8Array.from(JSON.parse(privateKeyB58) as number[]);
+    } else {
+      privateKeyBytes = bs58.decode(privateKeyB58);
+    }
     const keypair = Keypair.fromSecretKey(privateKeyBytes);
 
     const agent = new SolanaAgentKit(
