@@ -29,30 +29,33 @@ app.use(
 
 app.use(cors());
 
-// Forward all /jaire/* requests to the Python FastAPI service on port 8000.
-// This proxy runs BEFORE body parsers so webhook HMAC verification gets the raw body.
-app.use("/jaire", (req, res) => {
-  const options: http.RequestOptions = {
-    hostname: "localhost",
-    port: 8000,
-    path: req.originalUrl,
-    method: req.method,
-    headers: { ...req.headers, host: "localhost:8000" },
+// Forward /jaire/* and /api/jaire/* requests to the Python FastAPI service on port 8000.
+// Runs BEFORE body parsers so raw request bodies are streamed intact.
+// In dev: Vite proxies /jaire/* directly here. In production: frontend calls /api/jaire/*.
+function makePythonProxy() {
+  return (req: express.Request, res: express.Response) => {
+    // req.url is relative to the mount point, e.g. "/wallet/create"
+    const forwardPath = `/jaire${req.url}`;
+    const options: http.RequestOptions = {
+      hostname: "localhost",
+      port: 8000,
+      path: forwardPath,
+      method: req.method,
+      headers: { ...req.headers, host: "localhost:8000" },
+    };
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.pipe(res, { end: true });
+    });
+    proxyReq.on("error", () => {
+      if (!res.headersSent) res.status(502).json({ error: "JaIre Python service unavailable" });
+    });
+    req.pipe(proxyReq, { end: true });
   };
+}
 
-  const proxyReq = http.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-    proxyRes.pipe(res, { end: true });
-  });
-
-  proxyReq.on("error", () => {
-    if (!res.headersSent) {
-      res.status(502).json({ error: "JaIre Python service unavailable" });
-    }
-  });
-
-  req.pipe(proxyReq, { end: true });
-});
+app.use("/jaire", makePythonProxy());
+app.use("/api/jaire", makePythonProxy());
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));

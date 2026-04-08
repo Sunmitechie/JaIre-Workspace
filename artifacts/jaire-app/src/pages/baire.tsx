@@ -65,7 +65,7 @@ export default function Baire() {
     let mounted = true;
     const fetchBal = async () => {
       try {
-        const res = await fetch(`/jaire/devnet/balance/${user.walletAddress}`);
+        const res = await fetch(`/api/jaire/devnet/balance/${user.walletAddress}`);
         const data = await res.json();
         if (mounted) setUsdcBalance(data.usdc_balance ?? 0);
       } catch {}
@@ -156,7 +156,7 @@ export default function Baire() {
 
                 if (finalText.toLowerCase().includes("booking confirmed") || finalText.toLowerCase().includes("booking id")) {
                   if (user?.walletAddress) {
-                    fetch(`/jaire/devnet/balance/${user.walletAddress}`)
+                    fetch(`/api/jaire/devnet/balance/${user.walletAddress}`)
                       .then(r => r.json())
                       .then(d => setUsdcBalance(d.usdc_balance ?? 0))
                       .catch(() => {});
