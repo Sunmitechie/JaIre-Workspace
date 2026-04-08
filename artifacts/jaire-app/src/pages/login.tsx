@@ -15,6 +15,7 @@ const PROVIDERS = [
         <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
       </svg>
     ),
+    names: ["Chidi Okonkwo", "Amara Eze", "Femi Adeyemi", "Zara Bello"],
   },
   {
     id: "twitter",
@@ -24,6 +25,7 @@ const PROVIDERS = [
         <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
       </svg>
     ),
+    names: ["Kemi Osei", "Tobenna J.", "Iyanu B.", "Solape A."],
   },
   {
     id: "apple",
@@ -33,61 +35,146 @@ const PROVIDERS = [
         <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
       </svg>
     ),
+    names: ["Akin T.", "Ngozi O.", "Dami A.", "Tunde F."],
   },
 ];
 
-const FAKE_NAMES: Record<string, string> = {
-  google: "Alex Okonkwo",
-  twitter: "Chisom B.",
-  apple: "Tunde Adeyemi",
-  email: "You",
-};
+const STEPS = [
+  "Verifying identity...",
+  "Generating your Solana wallet...",
+  "Requesting devnet airdrop...",
+  "Linking your JaIre account...",
+  "Almost ready!",
+];
 
 export default function Login() {
   const [, setLocation] = useLocation();
   const [loading, setLoading] = useState<string | null>(null);
   const [step, setStep] = useState<"choose" | "securing">("choose");
+  const [stepLabel, setStepLabel] = useState(STEPS[0]);
+  const [error, setError] = useState<string | null>(null);
 
   const handleLogin = async (providerId: string) => {
     setLoading(providerId);
     setStep("securing");
+    setError(null);
 
-    await new Promise((r) => setTimeout(r, 2200));
+    const provider = PROVIDERS.find((p) => p.id === providerId);
+    const name = provider?.names[Math.floor(Math.random() * (provider?.names.length ?? 1))] ?? "User";
+    const seed = Date.now();
+    const email = `${providerId}_${seed}@jaire-demo.app`;
 
     try {
-      await fetch("/api/wallet/connect", {
+      setStepLabel(STEPS[0]);
+      await delay(600);
+
+      setStepLabel(STEPS[1]);
+      await delay(500);
+
+      const walletRes = await fetch("/jaire/wallet/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet_type: "web3auth" }),
+        body: JSON.stringify({ user_identifier: email, user_name: name }),
       });
-    } catch {}
 
-    saveUser({
-      id: `user_${Date.now()}`,
-      name: FAKE_NAMES[providerId] || "You",
-      email: `${providerId}@jaire.app`,
-      avatar: `https://api.dicebear.com/7.x/shapes/svg?seed=${providerId}${Date.now()}`,
-      provider: providerId as any,
-    });
+      if (!walletRes.ok) throw new Error("Wallet creation failed");
+      const walletData = await walletRes.json();
+      const walletAddress: string = walletData.pubkey;
 
-    setLocation("/baire");
+      setStepLabel(STEPS[2]);
+      await delay(800);
+
+      setStepLabel(STEPS[3]);
+      await delay(500);
+
+      setStepLabel(STEPS[4]);
+      await delay(400);
+
+      saveUser({
+        id: `user_${seed}`,
+        name,
+        email,
+        avatar: `https://api.dicebear.com/7.x/shapes/svg?seed=${providerId}${seed}`,
+        provider: providerId as any,
+        walletAddress,
+        walletNetwork: walletData.network ?? "devnet",
+        walletCreatedAt: new Date().toISOString(),
+      });
+
+      setLocation("/baire");
+    } catch (err) {
+      console.error("Login error:", err);
+      setError("Couldn't create your wallet. Please try again.");
+      setStep("choose");
+      setLoading(null);
+    }
+  };
+
+  const handleEmailLogin = async () => {
+    const email = (document.getElementById("email-input") as HTMLInputElement)?.value?.trim();
+    if (!email || !email.includes("@")) {
+      setError("Please enter a valid email.");
+      return;
+    }
+    setLoading("email");
+    setStep("securing");
+    setError(null);
+
+    const name = email.split("@")[0] ?? "User";
+
+    try {
+      setStepLabel(STEPS[0]);
+      await delay(500);
+      setStepLabel(STEPS[1]);
+
+      const walletRes = await fetch("/jaire/wallet/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_identifier: email, user_name: name }),
+      });
+
+      if (!walletRes.ok) throw new Error("Wallet creation failed");
+      const walletData = await walletRes.json();
+
+      setStepLabel(STEPS[2]);
+      await delay(700);
+      setStepLabel(STEPS[3]);
+      await delay(400);
+      setStepLabel(STEPS[4]);
+      await delay(300);
+
+      saveUser({
+        id: `user_${Date.now()}`,
+        name,
+        email,
+        avatar: `https://api.dicebear.com/7.x/shapes/svg?seed=email${Date.now()}`,
+        provider: "email",
+        walletAddress: walletData.pubkey,
+        walletNetwork: walletData.network ?? "devnet",
+        walletCreatedAt: new Date().toISOString(),
+      });
+
+      setLocation("/baire");
+    } catch (err) {
+      setError("Couldn't create your wallet. Please try again.");
+      setStep("choose");
+      setLoading(null);
+    }
   };
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
       <Particles count={50} />
-
       <div className="absolute inset-0 bg-gradient-radial from-[rgba(255,170,0,0.04)] via-transparent to-transparent pointer-events-none" />
 
-      <div
-        className="relative z-10 w-full max-w-md mx-auto px-6"
-        style={{ animation: "fadeIn 0.6s ease-out" }}
-      >
+      <div className="relative z-10 w-full max-w-md mx-auto px-6" style={{ animation: "fadeIn 0.6s ease-out" }}>
         <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }`}</style>
 
         <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-6 glow-gold"
-            style={{ background: "linear-gradient(135deg, rgba(255,170,0,0.2) 0%, rgba(255,170,0,0.08) 100%)", border: "1px solid rgba(255,170,0,0.3)" }}>
+          <div
+            className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-6"
+            style={{ background: "linear-gradient(135deg, rgba(255,170,0,0.2) 0%, rgba(255,170,0,0.08) 100%)", border: "1px solid rgba(255,170,0,0.3)" }}
+          >
             <span className="text-2xl font-bold text-gradient-gold">JI</span>
           </div>
           <h1 className="text-4xl font-bold mb-3">
@@ -101,6 +188,12 @@ export default function Login() {
         <div className="glass-card rounded-2xl p-8 border-gradient">
           {step === "choose" ? (
             <div className="space-y-3">
+              {error && (
+                <div className="px-4 py-3 rounded-xl text-sm text-red-400 bg-red-400/8 border border-red-400/20 mb-2">
+                  {error}
+                </div>
+              )}
+
               {PROVIDERS.map((p) => (
                 <button
                   key={p.id}
@@ -125,18 +218,26 @@ export default function Login() {
                 </div>
               </div>
 
-              <button
-                onClick={() => handleLogin("email")}
-                className="w-full flex items-center gap-4 px-5 py-4 rounded-xl bg-primary/8 hover:bg-primary/12 border border-primary/20 hover:border-primary/40 transition-all duration-200 text-left group"
-              >
-                <svg className="w-5 h-5 shrink-0 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-                <span className="font-medium text-[15px] text-primary">Continue with Email</span>
-                <svg className="w-4 h-4 ml-auto text-primary/60 group-hover:text-primary group-hover:translate-x-0.5 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
-              </button>
+              <div className="space-y-2">
+                <input
+                  id="email-input"
+                  type="email"
+                  placeholder="you@example.com"
+                  className="w-full h-12 px-4 rounded-xl text-sm bg-white/4 border border-white/8 focus:outline-none focus:border-primary/50 focus:bg-white/6 transition-all placeholder:text-muted-foreground/50"
+                />
+                <button
+                  onClick={handleEmailLogin}
+                  className="w-full flex items-center gap-4 px-5 py-4 rounded-xl bg-primary/8 hover:bg-primary/12 border border-primary/20 hover:border-primary/40 transition-all duration-200 text-left group"
+                >
+                  <svg className="w-5 h-5 shrink-0 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  <span className="font-medium text-[15px] text-primary">Continue with Email</span>
+                  <svg className="w-4 h-4 ml-auto text-primary/60 group-hover:text-primary group-hover:translate-x-0.5 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
             </div>
           ) : (
             <div className="py-8 flex flex-col items-center gap-6">
@@ -150,8 +251,8 @@ export default function Login() {
                 </div>
               </div>
               <div className="text-center">
-                <p className="font-semibold text-lg mb-1">Securing your account</p>
-                <p className="text-muted-foreground text-sm">Creating your private workspace profile...</p>
+                <p className="font-semibold text-lg mb-1">Setting up your account</p>
+                <p className="text-muted-foreground text-sm transition-all" key={stepLabel}>{stepLabel}</p>
               </div>
               <div className="flex gap-1.5">
                 {[0, 1, 2].map((i) => (
@@ -163,10 +264,14 @@ export default function Login() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6 leading-relaxed">
-          By signing in, your payments are settled privately.<br />
+          By signing in, a Solana wallet is silently created for you.<br />
           No seed phrases. No crypto knowledge required.
         </p>
       </div>
     </div>
   );
+}
+
+function delay(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }

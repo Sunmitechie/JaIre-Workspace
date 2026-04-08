@@ -3,7 +3,7 @@ import multer from "multer";
 import { db } from "@workspace/db";
 import { conversations, messages } from "@workspace/db/schema";
 import { eq, asc } from "drizzle-orm";
-import { runBaireAgent, runBaireAgentStream } from "../agents/baire-agent.js";
+import { runBaireAgent, runBaireAgentStream, UserContext } from "../agents/baire-agent.js";
 import {
   speechToText,
   ensureCompatibleFormat,
@@ -73,8 +73,13 @@ router.post("/baire/conversations/:id/messages", async (req, res) => {
   const id = parseInt(req.params["id"]!, 10);
   if (isNaN(id)) return res.status(400).json({ error: "Invalid conversation ID" });
 
-  const userText = (req.body as any).message as string | undefined;
+  const body = req.body as any;
+  const userText = body.message as string | undefined;
   if (!userText?.trim()) return res.status(400).json({ error: "message is required" });
+
+  const userContext: UserContext | undefined = (body.user_name || body.user_email)
+    ? { name: body.user_name, email: body.user_email, walletAddress: body.wallet_address }
+    : undefined;
 
   sseHeaders(res);
 
@@ -84,7 +89,7 @@ router.post("/baire/conversations/:id/messages", async (req, res) => {
 
     let fullResponse = "";
 
-    for await (const chunk of runBaireAgentStream(userText, history)) {
+    for await (const chunk of runBaireAgentStream(userText, history, userContext)) {
       fullResponse += chunk;
       sendEvent(res, { type: "text", content: chunk });
     }
