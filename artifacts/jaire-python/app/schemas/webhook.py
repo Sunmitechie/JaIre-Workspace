@@ -49,10 +49,21 @@ class WalletResponse(BaseModel):
     user_id: str
 
 
+class ExplorerLinks(BaseModel):
+    solana_explorer: str
+    solscan: str
+    solana_fm: str
+
+
 class PaymentStatusResponse(BaseModel):
     payment_id: str
     status: str
     amount_ngn: float
     amount_usdc: float
+    exchange_rate: float = 1600.0
     tx_signature: Optional[str] = None
     is_test_mode: bool
+    explorer_links: Optional[ExplorerLinks] = None
+    wallet_address: Optional[str] = None
+    user_id: Optional[str] = None
+    network: str = "devnet"

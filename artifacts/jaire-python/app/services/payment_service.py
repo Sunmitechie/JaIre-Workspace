@@ -1,6 +1,8 @@
+import base64
 import hashlib
 import hmac
 import logging
+import os
 import uuid
 from decimal import Decimal
 from typing import Optional
@@ -15,8 +17,44 @@ from app.services.solana_service import get_solana_service
 logger = logging.getLogger(__name__)
 
 
+SOLANA_NETWORK = "devnet"
+EXPLORER_BASE = "https://explorer.solana.com"
+SOLSCAN_BASE = "https://solscan.io"
+SOLANAFM_BASE = "https://solana.fm"
+
+
 def _ngn_to_usdc(amount_ngn: float) -> float:
     return round(amount_ngn / settings.ngn_usdc_rate, 6)
+
+
+def _explorer_links(signature: str, is_simulated: bool = False) -> dict:
+    """Return Solana explorer URLs for a transaction signature."""
+    cluster = f"?cluster={SOLANA_NETWORK}"
+    fm_cluster = f"?cluster={SOLANA_NETWORK}-solana"
+    prefix = "[SIMULATED] " if is_simulated else ""
+    return {
+        "solana_explorer": f"{prefix}{EXPLORER_BASE}/tx/{signature}{cluster}",
+        "solscan": f"{prefix}{SOLSCAN_BASE}/tx/{signature}{cluster}",
+        "solana_fm": f"{prefix}{SOLANAFM_BASE}/tx/{signature}{fm_cluster}",
+    }
+
+
+def _simulated_signature() -> str:
+    """Generate a base58-encoded 64-byte random value that looks like a real Solana signature."""
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    raw = os.urandom(64)
+    n = int.from_bytes(raw, "big")
+    result = []
+    while n:
+        n, rem = divmod(n, 58)
+        result.append(alphabet[rem])
+    # pad leading zeros
+    for byte in raw:
+        if byte == 0:
+            result.append(alphabet[0])
+        else:
+            break
+    return "".join(reversed(result))[:88]  # Solana sigs are 88 chars
 
 
 def verify_paystack_signature(payload: bytes, signature: str) -> bool:
@@ -135,16 +173,33 @@ async def process_payment(
     db.add(payment)
     await db.flush()
 
-    try:
-        solana_svc = get_solana_service()
-        signature = await solana_svc.transfer_usdc(wallet.pubkey, amount_usdc)
-        payment.tx_signature = signature
+    if is_test_mode:
+        # In test mode: generate a realistic-looking simulated signature
+        # The USDC transfer is skipped but everything else is real (DB records, wallet, user)
+        sim_sig = _simulated_signature()
+        payment.tx_signature = sim_sig
         payment.status = "completed"
-        logger.info(f"Payment {payment.id} completed. Tx: {signature}")
-    except Exception as e:
-        payment.status = "failed"
-        payment.error_message = str(e)
-        logger.error(f"Payment {payment.id} failed: {e}")
-        raise
+        payment.error_message = None
+        links = _explorer_links(sim_sig, is_simulated=True)
+        logger.info(
+            f"[TEST MODE] Payment {payment.id} simulated. "
+            f"Sig: {sim_sig} | Solscan: {links['solscan']}"
+        )
+    else:
+        try:
+            solana_svc = get_solana_service()
+            signature = await solana_svc.transfer_usdc(wallet.pubkey, amount_usdc)
+            payment.tx_signature = signature
+            payment.status = "completed"
+            links = _explorer_links(signature, is_simulated=False)
+            logger.info(
+                f"Payment {payment.id} completed. "
+                f"Tx: {signature} | Solscan: {links['solscan']}"
+            )
+        except Exception as e:
+            payment.status = "failed"
+            payment.error_message = str(e)
+            logger.error(f"Payment {payment.id} failed: {e}")
+            raise
 
     return payment

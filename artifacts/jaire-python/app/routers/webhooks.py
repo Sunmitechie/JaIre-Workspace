@@ -6,16 +6,20 @@ from typing import Any
 
 from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.config import settings
 from app.database import get_db
 from app.schemas.webhook import (
+    ExplorerLinks,
     PaystackWebhook,
     RoqquWebhook,
     TestPaymentRequest,
     PaymentStatusResponse,
 )
 from app.services import payment_service
+from app.services.payment_service import _explorer_links
+from app.models import JaireWallet
 
 router = APIRouter(tags=["webhooks"])
 logger = logging.getLogger(__name__)
@@ -123,7 +127,7 @@ async def roqqu_webhook(
     }
 
 
-@router.post("/jaire/webhook/test", response_model=PaymentStatusResponse)
+@router.post("/jaire/webhook/test")
 async def test_payment(
     body: TestPaymentRequest,
     db: AsyncSession = Depends(get_db),
@@ -148,11 +152,46 @@ async def test_payment(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    return PaymentStatusResponse(
-        payment_id=str(payment.id),
-        status=payment.status,
-        amount_ngn=float(payment.amount_ngn),
-        amount_usdc=float(payment.amount_usdc),
-        tx_signature=payment.tx_signature,
-        is_test_mode=payment.is_test_mode,
+    # Fetch wallet address for response
+    wallet_stmt = (
+        select(JaireWallet)
+        .where(JaireWallet.user_id == payment.user_id)
+        .where(JaireWallet.is_active == True)
     )
+    wallet_result = await db.execute(wallet_stmt)
+    wallet = wallet_result.scalar_one_or_none()
+    wallet_address = wallet.pubkey if wallet else None
+
+    # Build explorer links
+    explorer = None
+    if payment.tx_signature:
+        raw_links = _explorer_links(payment.tx_signature, is_simulated=True)
+        explorer = ExplorerLinks(
+            solana_explorer=raw_links["solana_explorer"],
+            solscan=raw_links["solscan"],
+            solana_fm=raw_links["solana_fm"],
+        )
+
+    return {
+        "payment_id": str(payment.id),
+        "status": payment.status,
+        "amount_ngn": float(payment.amount_ngn),
+        "amount_usdc": float(payment.amount_usdc),
+        "exchange_rate": float(payment.exchange_rate),
+        "tx_signature": payment.tx_signature,
+        "is_test_mode": payment.is_test_mode,
+        "network": settings.solana_network,
+        "wallet_address": wallet_address,
+        "user_id": str(payment.user_id),
+        "payment_reference": reference,
+        "explorer_links": explorer.model_dump() if explorer else None,
+        "flow_trace": {
+            "1_fiat_received": f"₦{float(payment.amount_ngn):,.2f} NGN received via Paystack/Roqqu",
+            "2_rate_applied": f"Rate: ₦{float(payment.exchange_rate):,.0f}/USDC",
+            "3_usdc_calculated": f"{float(payment.amount_usdc):.6f} USDC",
+            "4_wallet_assigned": wallet_address or "being created",
+            "5_solana_tx": payment.tx_signature,
+            "6_status": payment.status.upper(),
+            "note": "[TEST MODE] — USDC transfer simulated. Fund treasury to go live on-chain.",
+        },
+    }
