@@ -33,6 +33,7 @@ from sqlalchemy import select
 
 from app.models import JaireUser, JaireWallet, JaireSession
 from app.services.solana_service import get_solana_service
+import app.services.wallet_service as mpc_wallet_svc
 from app.services.kamino_service import (
     deposit_to_kamino,
     withdraw_from_kamino,
@@ -121,9 +122,17 @@ async def check_in(
     planned_hours: float,
     is_test_mode: bool = True,
     mint_override: Optional[str] = None,
+    web3auth_token: Optional[str] = None,
 ) -> JaireSession:
     """
     Check a user into a workspace and lock USDC in escrow (via Kamino).
+
+    If `web3auth_token` is provided:
+      1. Verify the JWT via MPC sidecar → get user's invisible wallet address
+      2. Link the wallet to the DB user record
+      3. Sign the USDC transfer from the user's MPC wallet → treasury escrow
+    Otherwise falls back to simulated transfer (test mode) or treasury wallet.
+
     Returns the created JaireSession.
     """
     workspace = WORKSPACES.get(workspace_id)
@@ -133,31 +142,67 @@ async def check_in(
     user = await _get_or_create_user(db, user_identifier)
     wallet = await _get_active_wallet(db, user.id)
 
-    solana = get_solana_service()
     hourly_rate = workspace["hourly_rate_usdc"]
     original_amount = (hourly_rate * Decimal(str(planned_hours))).quantize(Decimal("0.000001"))
 
     logger.info(
         f"[Session] CHECK-IN: user={user_identifier}, workspace={workspace_id}, "
-        f"planned_hours={planned_hours}, original_amount={original_amount} USDC"
+        f"planned_hours={planned_hours}, original_amount={original_amount} USDC, "
+        f"web3auth={'yes' if web3auth_token else 'no'}"
     )
 
     escrow_tx = None
+    mpc_wallet_address = None
 
-    if wallet and not is_test_mode:
+    # ── Web3Auth MPC path ─────────────────────────────────────────────────────
+    if web3auth_token:
         try:
-            escrow_tx = await solana.transfer_usdc(
-                from_pubkey_str=wallet.pubkey,
+            mpc_info = await mpc_wallet_svc.verify_web3auth_token(web3auth_token)
+            mpc_wallet_address = mpc_info.wallet_address
+
+            # Link wallet to DB user
+            await mpc_wallet_svc.get_or_link_mpc_wallet(
+                db, user, mpc_info.wallet_address, mpc_info.verifier_id
+            )
+
+            # Co-sign USDC transfer from user's invisible wallet → treasury
+            treasury_address = settings.treasury_pubkey or "JDtjhBDwv3WwJpQR1LAcC9kTCwr4sbZhdEYVmKPcxRE"
+            transfer_result = await mpc_wallet_svc.sign_escrow_deposit(
+                id_token=web3auth_token,
+                to_address=treasury_address,
                 amount_usdc=float(original_amount),
+                is_simulated=is_test_mode,
                 mint_override=mint_override,
             )
-            logger.info(f"[Session] Escrow transfer TX: {escrow_tx}")
+            escrow_tx = transfer_result.get("tx_signature")
+            logger.info(
+                f"[Session] MPC escrow deposit: {original_amount} USDC "
+                f"from {mpc_info.wallet_address[:8]}... TX={escrow_tx}"
+            )
         except Exception as e:
-            logger.error(f"[Session] Escrow transfer failed: {e}")
-            raise RuntimeError(f"Escrow transfer failed: {e}") from e
-    elif is_test_mode:
-        logger.info(f"[Session] TEST MODE — Skipping on-chain escrow transfer")
-        escrow_tx = f"SIMULATED-ESCROW-{str(user.id)[:8].upper()}"
+            logger.error(f"[Session] Web3Auth MPC check-in step failed: {e}")
+            if not is_test_mode:
+                raise RuntimeError(f"MPC wallet sign failed: {e}") from e
+            # In test mode, fall through to simulated escrow
+            logger.info("[Session] Falling back to simulated escrow (test mode)")
+
+    # ── Legacy / test fallback path ───────────────────────────────────────────
+    if escrow_tx is None:
+        solana = get_solana_service()
+        if wallet and not is_test_mode:
+            try:
+                escrow_tx = await solana.transfer_usdc(
+                    from_pubkey_str=wallet.pubkey,
+                    amount_usdc=float(original_amount),
+                    mint_override=mint_override,
+                )
+                logger.info(f"[Session] Escrow transfer TX: {escrow_tx}")
+            except Exception as e:
+                logger.error(f"[Session] Escrow transfer failed: {e}")
+                raise RuntimeError(f"Escrow transfer failed: {e}") from e
+        else:
+            logger.info(f"[Session] TEST MODE — Skipping on-chain escrow transfer")
+            escrow_tx = f"SIMULATED-ESCROW-{str(user.id)[:8].upper()}"
 
     kamino_result = await deposit_to_kamino(
         amount_usdc=original_amount,

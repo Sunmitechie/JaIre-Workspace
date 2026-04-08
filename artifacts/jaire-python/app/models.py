@@ -30,6 +30,9 @@ class JaireWallet(Base):
     network = Column(String(20), nullable=False, default="devnet")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Web3Auth MPC fields (added in v2)
+    verifier_id = Column(String(255), nullable=True, index=True)
+    wallet_type = Column(String(20), nullable=True, default="mpc")
 
     user = relationship("JaireUser", back_populates="wallets")
 

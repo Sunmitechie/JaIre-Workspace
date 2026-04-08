@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str = ""
 
     jaire_treasury_private_key: str = ""
+    treasury_pubkey: str = "JDtjhBDwv3WwJpQR1LAcC9kTCwr4sbZhdEYVmKPcxRE"
 
     solana_network: str = "devnet"
     solana_rpc_url: str = "https://api.devnet.solana.com"

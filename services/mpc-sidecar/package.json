@@ -10,11 +10,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0",
     "cors": "^2",
     "express": "^5",
-    "jose": "^5.10.0",
-    "bs58": "^6.0.0"
+    "jose": "^5.10.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

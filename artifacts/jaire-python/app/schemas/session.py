@@ -8,9 +8,17 @@ from pydantic import BaseModel, Field
 class CheckInRequest(BaseModel):
     user_identifier: str = Field(..., description="User email or phone number")
     workspace_id: str = Field(..., description="Workspace ID (e.g. ws-003)")
-    planned_hours: float = Field(..., ge=1, le=24, description="Planned booking duration in hours")
+    planned_hours: float = Field(..., ge=0.083, le=24, description="Planned booking duration in hours (min 5 minutes = 0.083h)")
     is_test_mode: bool = Field(default=True, description="Use simulated Kamino (devnet)")
     mint_override: Optional[str] = Field(default=None, description="Override USDC mint (devnet testing)")
+    web3auth_token: Optional[str] = Field(
+        default=None,
+        description=(
+            "Web3Auth JWT — when provided the user's invisible MPC wallet is used "
+            "as the USDC source for the escrow deposit. "
+            "If omitted, falls back to the treasury-held balance (test mode)."
+        ),
+    )
 
 
 class CheckOutRequest(BaseModel):

@@ -221,12 +221,67 @@ Real-time second-precision escrow with Kamino yield on idle USDC.
 
 ---
 
+## Web3Auth MPC Integration (COMPLETE)
+
+Invisible Solana wallets created at social login — user never sees a seed phrase.
+
+**Architecture:**
+- MPC Sidecar (`services/mpc-sidecar/`) → Node.js Express on port 9000
+- Node factor key (`WEB3AUTH_NODE_FACTOR_KEY`) + HMAC-SHA256 → deterministic 32-byte factor share per user
+- Factor share → deterministic devnet Keypair (simulation of TSS multi-party signing)
+- JWT verified via Web3Auth JWKS (`https://api-auth.web3auth.io/jwks`)
+
+**MPC Sidecar endpoints (port 9000):**
+| Endpoint | Purpose |
+|---|---|
+| `POST /mpc/factor-share` | Return server factor share to authenticated frontend SDK |
+| `POST /mpc/wallet` | Return wallet address for a Web3Auth user |
+| `POST /mpc/verify-token` | Verify JWT + return wallet address (called by Python API) |
+| `POST /mpc/wallet-balance` | SOL + USDC balance for user's invisible wallet |
+| `POST /mpc/fund-wallet` | Transfer USDC from treasury → user wallet (post-payment) |
+| `POST /mpc/sign-usdc-transfer` | Co-sign USDC from user wallet → escrow on check-in |
+
+**Python wallet API endpoints:**
+| Endpoint | Purpose |
+|---|---|
+| `POST /jaire/wallet/connect` | Verify JWT, link wallet to user, return address + balance |
+| `POST /jaire/wallet/balance` | Get USDC balance for a JWT user |
+| `POST /jaire/wallet/fund` | Fund wallet with USDC (devnet/test, called after Paystack) |
+
+**Payment → wallet flow:**
+1. User pays NGN via Paystack
+2. Paystack webhook → Python API
+3. Python API converts NGN → USDC via exchange rate
+4. Python API calls `POST /mpc/fund-wallet` (with user's Web3Auth JWT) → USDC transferred from treasury → user's invisible wallet
+5. Frontend calls `POST /jaire/session/check-in` with `web3auth_token`
+6. Python API calls `POST /mpc/sign-usdc-transfer` → user's wallet signs USDC → escrow
+
+**Check-in with Web3Auth:**
+- `POST /jaire/session/check-in` now accepts optional `web3auth_token`
+- When provided: verifies JWT → links wallet to user record → signs escrow deposit from user's invisible wallet
+- When absent: falls back to treasury-held simulated transfer (test mode)
+
+**Files:**
+- `services/mpc-sidecar/src/services/solana-wallet.ts` — USDC balance, fund, sign transfer
+- `services/mpc-sidecar/src/routes/mpc.ts` — all 6 MPC endpoints
+- `artifacts/jaire-python/app/services/wallet_service.py` — Python → MPC sidecar bridge
+- `artifacts/jaire-python/app/routers/wallet_mpc.py` — wallet API routes
+- `artifacts/jaire-python/app/config.py` — `treasury_pubkey`, `mpc_sidecar_url` config
+
+**DB changes:** `jaire_wallets` table gained `verifier_id` (VARCHAR) + `wallet_type` (VARCHAR) columns (safe migration on startup)
+
+**Devnet vs Mainnet:**
+- Devnet: Server derives full keypair (simulation). No TSS ceremony.
+- Mainnet: Replace `signUserUSDCTransfer()` with a proper Web3Auth TSS co-sign call (tKey MPC)
+
+---
+
 ## Next Steps
 
 - [ ] Jaie Analytics (text-to-text, host-facing CRO dashboard)
-- [ ] React frontend (Golden Yellow + Sky Blue + Purple, fintech design)
-- [ ] Web3Auth MPC integration into payment flow
+- [ ] **React frontend** (Golden Yellow + Sky Blue + Purple, fintech design)
 - [ ] Roqqu direct integration (requires published website URL)
 - [ ] Solana Blinks for social media booking
 - [ ] IoT smart plug access control
 - [ ] Kamino mainnet integration (klend-sdk)
+- [ ] Web3Auth frontend SDK integration (tKey MPC Core Kit)

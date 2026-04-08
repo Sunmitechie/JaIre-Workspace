@@ -41,6 +41,7 @@ async def check_in(
             planned_hours=body.planned_hours,
             is_test_mode=body.is_test_mode,
             mint_override=body.mint_override,
+            web3auth_token=body.web3auth_token,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
