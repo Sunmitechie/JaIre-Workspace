@@ -145,13 +145,45 @@ State accounts: `WorkspaceState` (PDA: `["workspace", host]`), `SessionState` (P
 
 ---
 
+## Baire AI Agent (COMPLETE)
+
+Baire is JaIre's voice-to-voice AI concierge built on LangGraph + gpt-5.2 via Replit AI Integration.
+
+**Voice pipeline**: Audio in → STT (gpt-4o-mini-transcribe) → LangGraph ReAct agent (gpt-5.2 + tools) → TTS (gpt-audio/nova) → Audio SSE stream out
+
+**Files:**
+- `artifacts/api-server/src/agents/baire-agent.ts` — LangGraph createReactAgent with system prompt
+- `artifacts/api-server/src/agents/baire-tools.ts` — JaIre custom tools (workspaces, pricing, wallet balance)
+- `artifacts/api-server/src/agents/baire-solana.ts` — Solana Agent Kit (read-only, createLangchainTools)
+- `artifacts/api-server/src/routes/baire.ts` — REST routes
+
+**Baire API Endpoints (mounted at `/api/...`):**
+- `POST /api/baire/conversations` — Create conversation (returns `{id, title}`)
+- `GET /api/baire/conversations/:id/messages` — Get history
+- `POST /api/baire/conversations/:id/messages` — Text message → SSE stream (`{ type: "text", content }`)
+- `POST /api/baire/conversations/:id/voice-messages` — Multipart audio → SSE (`user_transcript`, `agent_text`, `audio_chunk`, `done`)
+- `POST /api/baire/voice-quick` — Stateless voice (no conversation history) for quick demos
+
+**Baire Tools:**
+- `list_workspaces` — 4 spaces: Hub, Founders Suite, Blockchain Lounge, Board Room
+- `calculate_booking_price` — NGN + USDC with duration
+- `check_wallet_balance` — Calls Python API by email/phone
+- `get_exchange_rate` — Internal JaIre NGN/USDC rate
+- `get_jaire_info` — General/payments/wallet/solana/booking info
+- Solana Agent Kit tools (balance, token info) for blockchain queries
+
+**DB Tables:**
+- `conversations` — id, title, created_at
+- `messages` — id, conversation_id, role, content, created_at
+
+---
+
 ## Next Steps
 
-- [ ] Fund treasury with SOL on devnet (use faucet.solana.com manually)
-- [ ] Complete Anchor CLI install and `anchor build` / `anchor deploy`
-- [ ] Wire payment flow: Paystack webhook → USDC transfer → session record
-- [ ] Kamino Finance yield integration (idle USDC earns yield)
-- [ ] Baire AI agent (OpenAI Realtime API + LangGraph voice concierge)
-- [ ] Jaie Analytics (MQTT + host-facing CRO dashboard)
+- [ ] Jaie Analytics (text-to-text, host-facing CRO dashboard)
 - [ ] React frontend (Golden Yellow + Sky Blue + Purple, fintech design)
+- [ ] Web3Auth MPC integration into payment flow
+- [ ] Roqqu direct integration (requires published website URL)
+- [ ] Kamino Finance yield on idle USDC
 - [ ] Solana Blinks for social media booking
+- [ ] IoT smart plug access control
