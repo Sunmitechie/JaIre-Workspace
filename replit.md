@@ -276,12 +276,51 @@ Invisible Solana wallets created at social login — user never sees a seed phra
 
 ---
 
+## Frontend (COMPLETE)
+
+React + Vite app at `/` (port 24196 in dev). Dark fintech aesthetic — Solana Green accent (#00FFA3), USDC Blue highlight.
+
+**Pages:**
+- `/` — Landing: hero + featured workspaces + Baire chat CTA
+- `/workspaces` — Browse all 4 workspaces (NGN + USDC rates, availability badges, AI-generated images)
+- `/workspaces/:id` — Workspace detail: availability calendar, amenities, book CTA
+- `/book/:workspaceId` — Booking flow: duration + payment method (Paystack/USDC wallet)
+- `/session/:bookingId` — Live session: polls every 2s, ticking clock + real-time cost in USDC & NGN, checkout CTA
+- `/bookings` — Booking history with dates, durations, amounts
+- `/baire` — Chat UI with Baire AI concierge (typing indicator, message bubbles)
+- `/wallet` — Web3Auth invisible wallet: USDC/SOL balance, fund via Paystack (NGN→USDC)
+- `/analytics` — Jaie Analytics host dashboard: revenue chart, occupancy chart, activity feed
+
+**API routes (Express api-server, port 8080):**
+- `GET /api/workspaces` — List workspaces (snake_case serialized)
+- `GET /api/workspaces/:id` — Workspace detail
+- `GET /api/workspaces/:id/availability` — Time slots
+- `GET /api/bookings` — User booking list
+- `POST /api/bookings` — Create booking / check-in
+- `GET /api/bookings/:id` — Booking detail
+- `POST /api/bookings/:id/checkout` — Check out (second-precision billing)
+- `GET /api/bookings/:id/status` — Live ticking status
+- `POST /api/wallet/connect` — Connect MPC wallet
+- `GET /api/wallet/balance` — USDC + SOL balance
+- `POST /api/wallet/fund` — Fund via Paystack NGN→USDC
+- `GET /api/analytics/dashboard` — Host dashboard metrics
+- `GET /api/analytics/occupancy` — Occupancy per workspace per day
+- `GET /api/analytics/revenue` — Revenue breakdown
+- `GET /api/analytics/activity` — Activity event feed
+
+**DB tables (PostgreSQL):** `workspaces`, `bookings`, `activity_events` (plus pre-existing `jaire_*` Python tables)
+
+**Vite proxy config:** `/api` → port 8080, `/jaire` → port 8000
+
+**Codegen:** `lib/api-spec/openapi.yaml` → `pnpm run --filter @workspace/api-spec codegen` → `lib/api-client-react/src/generated/api.ts`
+
+---
+
 ## Next Steps
 
-- [ ] Jaie Analytics (text-to-text, host-facing CRO dashboard)
-- [ ] **React frontend** (Golden Yellow + Sky Blue + Purple, fintech design)
 - [ ] Roqqu direct integration (requires published website URL)
 - [ ] Solana Blinks for social media booking
 - [ ] IoT smart plug access control
 - [ ] Kamino mainnet integration (klend-sdk)
 - [ ] Web3Auth frontend SDK integration (tKey MPC Core Kit)
+- [ ] Baire voice-to-voice (WebRTC audio)

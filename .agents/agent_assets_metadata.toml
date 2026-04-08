@@ -1,0 +1,26 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "plT-TRWVzqZb7X_VmoDBt"
+uri = "file://artifacts/jaire-app/src/assets/the-hub.png"
+type = "image"
+title = "Modern hot desk in Lagos"
+
+[[generated]]
+id = "LZSzxvTs0vlUUifEgAd7C"
+uri = "file://artifacts/jaire-app/src/assets/founders-suite.png"
+type = "image"
+title = "Premium private suite"
+
+[[generated]]
+id = "uVFPyENIvnfX93egB5LbO"
+uri = "file://artifacts/jaire-app/src/assets/blockchain-lounge.png"
+type = "image"
+title = "Blockchain lounge area"
+
+[[generated]]
+id = "iOzpGPIOR9C8y3NPAehvx"
+uri = "file://artifacts/jaire-app/src/assets/board-room.png"
+type = "image"
+title = "High tech board room"

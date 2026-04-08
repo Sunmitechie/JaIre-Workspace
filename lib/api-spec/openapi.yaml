@@ -1,22 +1,30 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: JaIre Web3 Coworking Platform API
 servers:
   - url: /api
-    description: Base API path
+    description: Baire AI concierge (Node api-server)
 tags:
   - name: health
     description: Health operations
+  - name: baire
+    description: Baire AI voice concierge
+  - name: workspaces
+    description: Workspace listings and availability
+  - name: bookings
+    description: Session bookings and check-in/out
+  - name: wallet
+    description: Web3Auth invisible wallet
+  - name: analytics
+    description: Jaie Analytics — host-facing CRO
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +32,364 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /baire/chat:
+    post:
+      operationId: baireChat
+      tags: [baire]
+      summary: Send a message to Baire (text concierge)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BaireChatRequest"
+      responses:
+        "200":
+          description: Baire reply
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaireChatResponse"
+
+  /baire/voice:
+    post:
+      operationId: baireVoice
+      tags: [baire]
+      summary: Send audio to Baire (voice-to-voice)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audio:
+                  type: string
+                  format: binary
+                session_id:
+                  type: string
+              required: [audio]
+      responses:
+        "200":
+          description: Audio reply + transcript
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaireVoiceResponse"
+
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      tags: [workspaces]
+      summary: List all available workspaces
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter by availability date (YYYY-MM-DD)
+        - name: min_rate
+          in: query
+          schema:
+            type: number
+          description: Minimum hourly rate (NGN)
+        - name: max_rate
+          in: query
+          schema:
+            type: number
+          description: Maximum hourly rate (NGN)
+        - name: amenities
+          in: query
+          schema:
+            type: string
+          description: Comma-separated amenities filter
+      responses:
+        "200":
+          description: List of workspaces
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Workspace"
+
+  /workspaces/{workspaceId}:
+    get:
+      operationId: getWorkspace
+      tags: [workspaces]
+      summary: Get workspace details
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+        "404":
+          description: Not found
+
+  /workspaces/{workspaceId}/availability:
+    get:
+      operationId: getWorkspaceAvailability
+      tags: [workspaces]
+      summary: Get time slots for a workspace on a given date
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Availability slots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TimeSlot"
+
+  /bookings:
+    get:
+      operationId: listBookings
+      tags: [bookings]
+      summary: List bookings for the current user
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, completed, cancelled, pending]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: User bookings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+    post:
+      operationId: createBooking
+      tags: [bookings]
+      summary: Create a new booking / check-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingBody"
+      responses:
+        "201":
+          description: Booking created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+
+  /bookings/{bookingId}:
+    get:
+      operationId: getBooking
+      tags: [bookings]
+      summary: Get a booking by ID
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Booking detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+
+  /bookings/{bookingId}/checkout:
+    post:
+      operationId: checkoutBooking
+      tags: [bookings]
+      summary: Check out of a booking (settle escrow)
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Checkout summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckoutSummary"
+
+  /bookings/{bookingId}/status:
+    get:
+      operationId: getBookingStatus
+      tags: [bookings]
+      summary: Real-time ticking status for an active booking
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Live session status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStatus"
+
+  /wallet/connect:
+    post:
+      operationId: connectWallet
+      tags: [wallet]
+      summary: Connect or create invisible Web3Auth MPC wallet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WalletConnectBody"
+      responses:
+        "200":
+          description: Wallet info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletInfo"
+
+  /wallet/balance:
+    get:
+      operationId: getWalletBalance
+      tags: [wallet]
+      summary: Get USDC balance of connected wallet
+      responses:
+        "200":
+          description: Balance info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletBalance"
+
+  /wallet/fund:
+    post:
+      operationId: fundWallet
+      tags: [wallet]
+      summary: Fund wallet via fiat (NGN → USDC via Paystack)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FundWalletBody"
+      responses:
+        "200":
+          description: Funding initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundWalletResponse"
+
+  /analytics/dashboard:
+    get:
+      operationId: getAnalyticsDashboard
+      tags: [analytics]
+      summary: Host dashboard summary (Jaie Analytics)
+      responses:
+        "200":
+          description: Dashboard metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsDashboard"
+
+  /analytics/occupancy:
+    get:
+      operationId: getOccupancyAnalytics
+      tags: [analytics]
+      summary: Occupancy rates per workspace per day
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        "200":
+          description: Occupancy data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OccupancyData"
+
+  /analytics/revenue:
+    get:
+      operationId: getRevenueAnalytics
+      tags: [analytics]
+      summary: Revenue breakdown by workspace and time
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        "200":
+          description: Revenue data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RevenueData"
+
+  /analytics/activity:
+    get:
+      operationId: getActivityFeed
+      tags: [analytics]
+      summary: Recent activity feed across all workspaces
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Activity events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityEvent"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +397,387 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    BaireChatRequest:
+      type: object
+      properties:
+        message:
+          type: string
+        session_id:
+          type: string
+        user_id:
+          type: string
+      required: [message]
+
+    BaireChatResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+        session_id:
+          type: string
+        suggested_actions:
+          type: array
+          items:
+            type: string
+        workspace_recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Workspace"
+      required: [reply, session_id]
+
+    BaireVoiceResponse:
+      type: object
+      properties:
+        transcript:
+          type: string
+        reply:
+          type: string
+        audio_url:
+          type: string
+        session_id:
+          type: string
+      required: [transcript, reply, session_id]
+
+    Workspace:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        capacity:
+          type: integer
+        hourly_rate_ngn:
+          type: number
+          description: Hourly rate in Nigerian Naira
+        hourly_rate_usdc:
+          type: number
+          description: Hourly rate in USDC
+        amenities:
+          type: array
+          items:
+            type: string
+        image_url:
+          type: string
+        is_available:
+          type: boolean
+        current_occupant_count:
+          type: integer
+        floor:
+          type: integer
+        workspace_type:
+          type: string
+          enum: [hot_desk, private_suite, meeting_room, lounge]
+      required: [id, name, hourly_rate_ngn, hourly_rate_usdc, is_available]
+
+    TimeSlot:
+      type: object
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        is_available:
+          type: boolean
+        booking_id:
+          type: string
+      required: [start_time, end_time, is_available]
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+        workspace_id:
+          type: string
+        workspace_name:
+          type: string
+        user_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, active, completed, cancelled]
+        check_in_time:
+          type: string
+          format: date-time
+        check_out_time:
+          type: string
+          format: date-time
+        planned_duration_hours:
+          type: number
+        actual_duration_seconds:
+          type: integer
+        escrow_amount_usdc:
+          type: number
+        billed_amount_usdc:
+          type: number
+        refunded_amount_usdc:
+          type: number
+        escrow_account:
+          type: string
+          description: Solana escrow account pubkey
+        transaction_signature:
+          type: string
+        payment_method:
+          type: string
+          enum: [paystack, roqqu, usdc_wallet]
+        ngn_amount_paid:
+          type: number
+      required: [id, workspace_id, status]
+
+    CreateBookingBody:
+      type: object
+      properties:
+        workspace_id:
+          type: string
+        planned_duration_hours:
+          type: number
+        payment_method:
+          type: string
+          enum: [paystack, roqqu, usdc_wallet]
+        web3auth_token:
+          type: string
+        user_email:
+          type: string
+        user_name:
+          type: string
+      required: [workspace_id, planned_duration_hours]
+
+    CheckoutSummary:
+      type: object
+      properties:
+        booking_id:
+          type: string
+        workspace_name:
+          type: string
+        duration_seconds:
+          type: integer
+        duration_display:
+          type: string
+        billed_usdc:
+          type: number
+        refunded_usdc:
+          type: number
+        yield_earned_usdc:
+          type: number
+        transaction_signature:
+          type: string
+        check_in_time:
+          type: string
+          format: date-time
+        check_out_time:
+          type: string
+          format: date-time
+      required: [booking_id, duration_seconds, billed_usdc]
+
+    SessionStatus:
+      type: object
+      properties:
+        booking_id:
+          type: string
+        workspace_id:
+          type: string
+        workspace_name:
+          type: string
+        status:
+          type: string
+          enum: [active, completed, cancelled]
+        elapsed_seconds:
+          type: integer
+        planned_seconds:
+          type: integer
+        elapsed_display:
+          type: string
+        current_cost_usdc:
+          type: number
+        current_cost_ngn:
+          type: number
+        escrowed_usdc:
+          type: number
+        check_in_time:
+          type: string
+          format: date-time
+      required: [booking_id, status, elapsed_seconds, current_cost_usdc]
+
+    WalletConnectBody:
+      type: object
+      properties:
+        web3auth_token:
+          type: string
+        email:
+          type: string
+      required: [web3auth_token]
+
+    WalletInfo:
+      type: object
+      properties:
+        public_key:
+          type: string
+        wallet_type:
+          type: string
+          enum: [mpc, custodial, external]
+        balance_usdc:
+          type: number
+        balance_sol:
+          type: number
+        verifier_id:
+          type: string
+        connected:
+          type: boolean
+      required: [public_key, connected]
+
+    WalletBalance:
+      type: object
+      properties:
+        public_key:
+          type: string
+        balance_usdc:
+          type: number
+        balance_sol:
+          type: number
+        last_updated:
+          type: string
+          format: date-time
+      required: [public_key, balance_usdc, balance_sol]
+
+    FundWalletBody:
+      type: object
+      properties:
+        amount_ngn:
+          type: number
+          description: Amount in Nigerian Naira to convert to USDC
+        payment_method:
+          type: string
+          enum: [paystack, roqqu]
+        email:
+          type: string
+      required: [amount_ngn, payment_method, email]
+
+    FundWalletResponse:
+      type: object
+      properties:
+        payment_url:
+          type: string
+          description: Paystack/Roqqu checkout URL
+        reference:
+          type: string
+        amount_ngn:
+          type: number
+        estimated_usdc:
+          type: number
+        exchange_rate:
+          type: number
+          description: NGN per USDC
+      required: [payment_url, reference, amount_ngn, estimated_usdc]
+
+    AnalyticsDashboard:
+      type: object
+      properties:
+        total_revenue_usdc:
+          type: number
+        total_revenue_ngn:
+          type: number
+        total_sessions_today:
+          type: integer
+        active_sessions:
+          type: integer
+        occupancy_rate:
+          type: number
+          description: 0-1 fraction
+        avg_session_duration_hours:
+          type: number
+        top_workspace:
+          type: string
+        yield_earned_usdc:
+          type: number
+          description: Kamino yield earned
+        revenue_trend:
+          type: string
+          enum: [up, down, flat]
+        revenue_change_pct:
+          type: number
+        workspace_stats:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceStat"
+      required: [total_revenue_usdc, active_sessions, occupancy_rate]
+
+    WorkspaceStat:
+      type: object
+      properties:
+        workspace_id:
+          type: string
+        workspace_name:
+          type: string
+        sessions_today:
+          type: integer
+        revenue_today_usdc:
+          type: number
+        occupancy_rate:
+          type: number
+      required: [workspace_id, workspace_name, sessions_today]
+
+    OccupancyData:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        workspace_id:
+          type: string
+        workspace_name:
+          type: string
+        occupancy_rate:
+          type: number
+        total_hours:
+          type: number
+      required: [date, workspace_id, occupancy_rate]
+
+    RevenueData:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        workspace_id:
+          type: string
+        workspace_name:
+          type: string
+        revenue_usdc:
+          type: number
+        revenue_ngn:
+          type: number
+        session_count:
+          type: integer
+      required: [date, workspace_id, revenue_usdc]
+
+    ActivityEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        event_type:
+          type: string
+          enum: [check_in, check_out, payment, wallet_funded, booking_cancelled]
+        workspace_id:
+          type: string
+        workspace_name:
+          type: string
+        user_name:
+          type: string
+        amount_usdc:
+          type: number
+        amount_ngn:
+          type: number
+        timestamp:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+      required: [id, event_type, timestamp]
