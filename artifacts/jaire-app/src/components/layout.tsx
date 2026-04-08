@@ -23,7 +23,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     let mounted = true;
     const fetchBalance = async () => {
       try {
-        const res = await fetch(`/jaire/devnet/balance/${user.walletAddress}`);
+        const res = await fetch(`/api/jaire/devnet/balance/${user.walletAddress}`);
         if (!res.ok) return;
         const data = await res.json();
         if (mounted) setUsdcBalance(data.usdc_balance ?? 0);

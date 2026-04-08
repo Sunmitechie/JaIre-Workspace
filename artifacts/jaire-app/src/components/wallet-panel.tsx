@@ -38,7 +38,7 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
     if (!user?.walletAddress) return;
     setWallet((w) => ({ ...w, loading: true, error: null }));
     try {
-      const res = await fetch(`/jaire/devnet/balance/${user.walletAddress}`);
+      const res = await fetch(`/api/jaire/devnet/balance/${user.walletAddress}`);
       const data = await res.json();
       setWallet({ sol: data.sol_balance ?? 0, usdc: data.usdc_balance ?? 0, loading: false, error: null });
       setBalanceLoaded(true);
@@ -59,7 +59,7 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
 
     try {
       const ref = `JAIRE-DEMO-${Date.now()}`;
-      const res = await fetch("/jaire/webhook/test", {
+      const res = await fetch("/api/jaire/webhook/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

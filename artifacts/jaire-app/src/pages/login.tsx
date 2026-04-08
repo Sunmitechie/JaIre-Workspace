@@ -71,7 +71,7 @@ export default function Login() {
       setStepLabel(STEPS[1]);
       await delay(500);
 
-      const walletRes = await fetch("/jaire/wallet/create", {
+      const walletRes = await fetch("/api/jaire/wallet/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_identifier: email, user_name: name }),
@@ -127,7 +127,7 @@ export default function Login() {
       await delay(500);
       setStepLabel(STEPS[1]);
 
-      const walletRes = await fetch("/jaire/wallet/create", {
+      const walletRes = await fetch("/api/jaire/wallet/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_identifier: email, user_name: name }),
