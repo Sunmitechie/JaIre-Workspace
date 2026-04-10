@@ -7,7 +7,7 @@ from solders.keypair import Keypair
 from solders.message import Message
 from solders.transaction import Transaction
 from solana.rpc.async_api import AsyncClient
-from solana.rpc.commitment import Confirmed, Finalized
+from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TxOpts
 from spl.token.instructions import (
     create_associated_token_account,
@@ -63,16 +63,85 @@ def build_mint_to_instruction(mint: Pubkey, dest: Pubkey, mint_authority: Pubkey
     )
 
 
+def _load_keypair(secret_str: str) -> Keypair:
+    """
+    Load a Solana Keypair from several common secret formats:
+      - hex 32-byte seed (64 hex chars)   → Keypair.from_seed()
+      - hex 64-byte keypair (128 hex chars) → Keypair.from_bytes()
+      - base58-encoded 64-byte keypair     → Keypair.from_bytes()
+      - JSON array of 64 integers          → Keypair.from_bytes()
+    """
+    s = secret_str.strip()
+
+    # JSON array: [1, 2, 3, ...]
+    if s.startswith("["):
+        import json
+        arr = json.loads(s)
+        return Keypair.from_bytes(bytes(arr))
+
+    # Hex string
+    if all(c in "0123456789abcdefABCDEF" for c in s):
+        raw = bytes.fromhex(s)
+        if len(raw) == 32:
+            return Keypair.from_seed(raw)
+        elif len(raw) == 64:
+            return Keypair.from_bytes(raw)
+        else:
+            raise ValueError(f"Unexpected hex key length: {len(raw)} bytes")
+
+    # Base58
+    import base58
+    raw = base58.b58decode(s)
+    if len(raw) == 64:
+        return Keypair.from_bytes(raw)
+    elif len(raw) == 32:
+        return Keypair.from_seed(raw)
+    raise ValueError(f"Cannot load keypair from secret (decoded {len(raw)} bytes)")
+
+
 class SolanaService:
+    """
+    Manages the JaIre treasury keypair (used for devnet setup / minting)
+    AND the JaIre vault keypair (used for all live USDC disbursements to users).
+
+    Payment flow:
+      User pays fiat (NGN/USD) via Paystack/Stripe
+        → Oracle converts at live rate → X USDC
+          → Vault signs SPL transfer → User's Solana wallet receives X USDC
+    """
+
     def __init__(self):
         self.rpc_url = settings.solana_rpc_url
         self.client = AsyncClient(self.rpc_url, commitment=Confirmed)
 
-        secret_bytes = bytes.fromhex(settings.jaire_treasury_private_key)
-        self.treasury_keypair = Keypair.from_seed(secret_bytes)
+        # Treasury — used for devnet setup, airdrops, minting test tokens
+        treasury_secret = settings.jaire_treasury_private_key
+        self.treasury_keypair = _load_keypair(treasury_secret)
         self.treasury_pubkey = self.treasury_keypair.pubkey()
 
-        logger.info(f"SolanaService ready. Treasury: {self.treasury_pubkey}")
+        # Vault — the wallet that DISBURSES USDC to users after fiat payments
+        vault_secret = settings.jaire_vault_private_key
+        if vault_secret:
+            self.vault_keypair = _load_keypair(vault_secret)
+            self.vault_pubkey = self.vault_keypair.pubkey()
+            # Sanity check: confirm the derived pubkey matches the configured vault address
+            configured_addr = settings.jaire_vault_address
+            if configured_addr and str(self.vault_pubkey) != configured_addr:
+                logger.warning(
+                    f"Vault pubkey mismatch! Derived: {self.vault_pubkey} | "
+                    f"Config: {configured_addr} — using derived pubkey"
+                )
+        else:
+            # Fallback: vault = treasury (devnet only)
+            logger.warning("JAIRE_VAULT_PRIVATE_KEY not set — falling back to treasury for disbursements")
+            self.vault_keypair = self.treasury_keypair
+            self.vault_pubkey = self.treasury_pubkey
+
+        logger.info(f"SolanaService ready.")
+        logger.info(f"  Treasury : {self.treasury_pubkey}")
+        logger.info(f"  Vault    : {self.vault_pubkey}")
+
+    # ── Wallet Generation ──────────────────────────────────────────────────
 
     def generate_wallet(self) -> dict:
         keypair = Keypair()
@@ -81,25 +150,18 @@ class SolanaService:
             "secret_hex": keypair.secret().hex(),
         }
 
-    async def request_airdrop(self, pubkey_str: str, sol_amount: float = 1.0) -> str:
-        lamports = int(sol_amount * 1_000_000_000)
-        pubkey = Pubkey.from_string(pubkey_str)
-        resp = await self.client.request_airdrop(pubkey, lamports, commitment=Confirmed)
-        if resp.value:
-            await self._confirm_transaction(str(resp.value))
-        return str(resp.value)
+    # ── Balances ───────────────────────────────────────────────────────────
 
     async def get_sol_balance(self, pubkey_str: str) -> float:
         pubkey = Pubkey.from_string(pubkey_str)
         resp = await self.client.get_balance(pubkey, commitment=Confirmed)
         return resp.value / 1_000_000_000
 
-    async def get_usdc_balance(self, pubkey_str: str) -> float:
+    async def get_token_balance(self, pubkey_str: str, mint: Pubkey) -> float:
         try:
             owner = Pubkey.from_string(pubkey_str)
-            ata = get_ata_address(owner, USDC_MINT_DEVNET)
-            ata_exists = await self.ata_exists(owner, USDC_MINT_DEVNET)
-            if not ata_exists:
+            ata = get_ata_address(owner, mint)
+            if not await self.ata_exists(owner, mint):
                 return 0.0
             resp = await self.client.get_token_account_balance(ata, commitment=Confirmed)
             if resp.value is None:
@@ -108,67 +170,31 @@ class SolanaService:
         except Exception:
             return 0.0
 
+    async def get_usdc_balance(self, pubkey_str: str) -> float:
+        return await self.get_token_balance(pubkey_str, USDC_MINT_DEVNET)
+
     async def ata_exists(self, owner: Pubkey, mint: Pubkey) -> bool:
         ata = get_ata_address(owner, mint)
         resp = await self.client.get_account_info(ata, commitment=Confirmed)
         return resp.value is not None
 
-    async def transfer_usdc(
-        self,
-        recipient_pubkey_str: str,
-        amount_usdc: float,
-        mint_pubkey_str: Optional[str] = None,
-    ) -> str:
-        recipient = Pubkey.from_string(recipient_pubkey_str)
-        treasury = self.treasury_keypair.pubkey()
+    # ── Vault Info ─────────────────────────────────────────────────────────
 
-        # Use supplied mint or fall back to devnet USDC
-        if mint_pubkey_str:
-            mint = Pubkey.from_string(mint_pubkey_str)
-            logger.info(f"Using custom mint: {mint_pubkey_str}")
-        else:
-            mint = USDC_MINT_DEVNET
-
-        treasury_ata = get_ata_address(treasury, mint)
-        recipient_ata = get_ata_address(recipient, mint)
-
-        instructions = []
-
-        recipient_ata_exists = await self.ata_exists(recipient, mint)
-        if not recipient_ata_exists:
-            create_ata_ix = build_create_ata_instruction(
-                payer=treasury,
-                ata=recipient_ata,
-                owner=recipient,
-                mint=mint,
-            )
-            instructions.append(create_ata_ix)
-            logger.info(f"Will create ATA for recipient: {recipient_ata}")
-
-        raw_amount = int(amount_usdc * (10 ** USDC_DECIMALS))
-        transfer_ix = build_spl_transfer_instruction(
-            source_ata=treasury_ata,
-            dest_ata=recipient_ata,
-            owner=treasury,
-            amount=raw_amount,
-        )
-        instructions.append(transfer_ix)
-
-        blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
-        recent_blockhash = blockhash_resp.value.blockhash
-
-        msg = Message.new_with_blockhash(instructions, treasury, recent_blockhash)
-        tx = Transaction([self.treasury_keypair], msg, recent_blockhash)
-
-        resp = await self.client.send_transaction(
-            tx,
-            opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
-        )
-        signature = str(resp.value)
-        logger.info(f"USDC transfer tx: {signature}")
-
-        await self._confirm_transaction(signature)
-        return signature
+    async def get_vault_info(self, mint_override: Optional[str] = None) -> dict:
+        pubkey_str = str(self.vault_pubkey)
+        sol = await self.get_sol_balance(pubkey_str)
+        mint = Pubkey.from_string(mint_override) if mint_override else USDC_MINT_DEVNET
+        usdc = await self.get_token_balance(pubkey_str, mint)
+        ata = get_ata_address(self.vault_pubkey, mint)
+        return {
+            "pubkey": pubkey_str,
+            "sol_balance": sol,
+            "usdc_balance": usdc,
+            "usdc_ata": str(ata),
+            "mint": str(mint),
+            "network": settings.solana_network,
+            "rpc": self.rpc_url,
+        }
 
     async def get_treasury_info(self) -> dict:
         pubkey_str = str(self.treasury_pubkey)
@@ -182,45 +208,94 @@ class SolanaService:
             "rpc": self.rpc_url,
         }
 
-    async def _confirm_transaction(self, signature: str, max_attempts: int = 60, poll_interval: float = 2.0):
-        from solders.signature import Signature
-        sig = Signature.from_string(signature)
-        for attempt in range(max_attempts):
-            resp = await self.client.get_signature_statuses([sig])
-            if resp.value and resp.value[0] is not None:
-                status = resp.value[0]
-                if status.err:
-                    raise RuntimeError(f"Transaction failed: {status.err}")
-                # confirmation_status may be an enum; compare via str()
-                cs = str(status.confirmation_status).lower()
-                if "confirmed" in cs or "finalized" in cs:
-                    logger.info(f"Transaction {signature[:20]}... confirmed after {attempt * poll_interval:.0f}s")
-                    return
-            await asyncio.sleep(poll_interval)
-        raise TimeoutError(f"Transaction {signature} not confirmed after {max_attempts * poll_interval:.0f}s")
+    # ── Airdrop (devnet only) ──────────────────────────────────────────────
 
-    async def submit_transaction_and_return(
+    async def request_airdrop(self, pubkey_str: str, sol_amount: float = 1.0) -> str:
+        lamports = int(sol_amount * 1_000_000_000)
+        pubkey = Pubkey.from_string(pubkey_str)
+        resp = await self.client.request_airdrop(pubkey, lamports, commitment=Confirmed)
+        if resp.value:
+            await self._confirm_transaction(str(resp.value))
+        return str(resp.value)
+
+    # ── Core: Vault Disbursement ───────────────────────────────────────────
+
+    async def disburse_from_vault(
         self,
         recipient_pubkey_str: str,
         amount_usdc: float,
         mint_pubkey_str: Optional[str] = None,
     ) -> str:
         """
-        Submit a USDC transfer transaction and return the signature immediately.
-        Confirmation happens asynchronously in the background.
+        Transfer USDC from JaIre's vault to a user's Solana wallet.
+        This is called after a successful fiat payment (Paystack/Stripe).
+        The vault keypair signs the transaction.
+        Creates the recipient's ATA if it doesn't exist (vault pays rent).
         """
         recipient = Pubkey.from_string(recipient_pubkey_str)
-        treasury = self.treasury_keypair.pubkey()
+        vault = self.vault_pubkey
+        mint = Pubkey.from_string(mint_pubkey_str) if mint_pubkey_str else USDC_MINT_DEVNET
 
+        vault_ata = get_ata_address(vault, mint)
+        recipient_ata = get_ata_address(recipient, mint)
+
+        instructions = []
+
+        # Create recipient ATA if needed — vault pays the rent
+        if not await self.ata_exists(recipient, mint):
+            instructions.append(create_associated_token_account(vault, recipient, mint))
+            logger.info(f"Creating ATA for recipient {recipient_pubkey_str[:16]}…")
+
+        raw_amount = int(amount_usdc * (10 ** USDC_DECIMALS))
+        instructions.append(
+            spl_transfer(
+                TransferParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    source=vault_ata,
+                    dest=recipient_ata,
+                    owner=vault,
+                    amount=raw_amount,
+                    signers=[],
+                )
+            )
+        )
+
+        blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
+        recent_blockhash = blockhash_resp.value.blockhash
+        msg = Message.new_with_blockhash(instructions, vault, recent_blockhash)
+        tx = Transaction([self.vault_keypair], msg, recent_blockhash)
+
+        resp = await self.client.send_transaction(
+            tx, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+        )
+        signature = str(resp.value)
+        logger.info(
+            f"[VAULT] Disbursed {amount_usdc} USDC to {recipient_pubkey_str[:16]}… "
+            f"| tx: {signature[:20]}…"
+        )
+
+        # Fire-and-forget confirmation in background
+        asyncio.create_task(self._confirm_transaction(signature))
+        return signature
+
+    # ── Legacy: Treasury Transfer (kept for devnet setup only) ────────────
+
+    async def transfer_usdc(
+        self,
+        recipient_pubkey_str: str,
+        amount_usdc: float,
+        mint_pubkey_str: Optional[str] = None,
+    ) -> str:
+        """Treasury-signed transfer. Use only for devnet setup / minting."""
+        recipient = Pubkey.from_string(recipient_pubkey_str)
+        treasury = self.treasury_keypair.pubkey()
         mint = Pubkey.from_string(mint_pubkey_str) if mint_pubkey_str else USDC_MINT_DEVNET
         treasury_ata = get_ata_address(treasury, mint)
         recipient_ata = get_ata_address(recipient, mint)
 
         instructions = []
-        recipient_ata_exists = await self.ata_exists(recipient, mint)
-        if not recipient_ata_exists:
+        if not await self.ata_exists(recipient, mint):
             instructions.append(create_associated_token_account(treasury, recipient, mint))
-            logger.info(f"Will create ATA for recipient: {recipient_ata}")
 
         raw_amount = int(amount_usdc * (10 ** USDC_DECIMALS))
         instructions.append(
@@ -245,11 +320,36 @@ class SolanaService:
             tx, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
         )
         signature = str(resp.value)
-        logger.info(f"USDC transfer submitted: {signature}")
-
-        # Fire-and-forget confirmation in background
-        asyncio.create_task(self._confirm_transaction(signature))
+        logger.info(f"[TREASURY] USDC transfer: {signature}")
+        await self._confirm_transaction(signature)
         return signature
+
+    # Alias for backward compatibility
+    async def submit_transaction_and_return(
+        self,
+        recipient_pubkey_str: str,
+        amount_usdc: float,
+        mint_pubkey_str: Optional[str] = None,
+    ) -> str:
+        return await self.disburse_from_vault(recipient_pubkey_str, amount_usdc, mint_pubkey_str)
+
+    # ── Transaction Confirmation ───────────────────────────────────────────
+
+    async def _confirm_transaction(self, signature: str, max_attempts: int = 60, poll_interval: float = 2.0):
+        from solders.signature import Signature
+        sig = Signature.from_string(signature)
+        for attempt in range(max_attempts):
+            resp = await self.client.get_signature_statuses([sig])
+            if resp.value and resp.value[0] is not None:
+                status = resp.value[0]
+                if status.err:
+                    raise RuntimeError(f"Transaction failed: {status.err}")
+                cs = str(status.confirmation_status).lower()
+                if "confirmed" in cs or "finalized" in cs:
+                    logger.info(f"Tx {signature[:20]}… confirmed after {attempt * poll_interval:.0f}s")
+                    return
+            await asyncio.sleep(poll_interval)
+        raise TimeoutError(f"Transaction {signature} not confirmed after {max_attempts * poll_interval:.0f}s")
 
     async def close(self):
         await self.client.close()
