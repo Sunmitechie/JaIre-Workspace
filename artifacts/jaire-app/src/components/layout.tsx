@@ -7,6 +7,7 @@ import { getUser, clearUser } from "@/lib/auth";
 import { useLocation as useWouterLocation } from "wouter";
 import { WalletPanel } from "@/components/wallet-panel";
 import { formatNGN } from "@/lib/currency";
+import { logoutWeb3Auth } from "@/lib/web3auth";
 
 const NGN_PER_USDC = 1600;
 
@@ -34,9 +35,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return () => { mounted = false; clearInterval(interval); };
   }, [user?.walletAddress]);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
     clearUser();
     setLocation("/");
+    // Fire-and-forget: logout from Web3Auth session (non-blocking)
+    logoutWeb3Auth().catch(() => {});
   };
 
   const navLinks = [
