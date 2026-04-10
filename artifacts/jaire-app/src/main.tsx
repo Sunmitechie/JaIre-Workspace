@@ -1,3 +1,14 @@
+// ── process.nextTick polyfill ─────────────────────────────────────────────────
+// Web3Auth's readable-stream dependency calls process.nextTick.
+// vite-plugin-node-polyfills provides `process` but some bundled chunks load
+// their own copy via require('process'). Patch it globally here first.
+if (typeof process !== "undefined" && typeof process.nextTick !== "function") {
+  (process as any).nextTick = (fn: (...a: unknown[]) => void, ...args: unknown[]) => {
+    Promise.resolve().then(() => fn(...args));
+  };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";

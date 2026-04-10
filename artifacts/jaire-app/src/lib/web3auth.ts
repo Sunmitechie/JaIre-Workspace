@@ -1,23 +1,14 @@
 import { Web3Auth } from "@web3auth/modal";
 
-// Injected at build time via vite.config.ts `define`
 declare const __WEB3AUTH_CLIENT_ID__: string;
 
 const NETWORK = "sapphire_devnet";
+const CONNECT_TIMEOUT = 120_000; // 2 min for popup flow
 
 let _instance: Web3Auth | null = null;
-let _initPromise: Promise<void> | null = null;
+let _initPromise: Promise<Web3Auth> | null = null;
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms),
-    ),
-  ]);
-}
-
-function createWeb3AuthInstance(): Web3Auth {
+function createInstance(): Web3Auth {
   return new Web3Auth({
     clientId: __WEB3AUTH_CLIENT_ID__,
     web3AuthNetwork: NETWORK as any,
@@ -32,20 +23,26 @@ function createWeb3AuthInstance(): Web3Auth {
   });
 }
 
-export function getInstance(): Web3Auth {
-  if (!_instance) _instance = createWeb3AuthInstance();
-  return _instance;
+/** Call this on page load to pre-warm the SDK so it's ready before the user clicks. */
+export function preloadWeb3Auth(): void {
+  if (_initPromise) return;
+  _initPromise = (async () => {
+    const w = createInstance();
+    _instance = w;
+    try {
+      await w.init();
+    } catch {
+      // init errors are non-fatal — we'll retry on demand
+      _initPromise = null;
+      _instance = null;
+    }
+    return w;
+  })();
 }
 
-export async function initWeb3Auth(): Promise<Web3Auth> {
-  const w = getInstance();
-  if (!_initPromise) {
-    _initPromise = withTimeout(w.init(), 20_000, "Web3Auth init").catch((err) => {
-      _initPromise = null;
-      throw err;
-    });
-  }
-  await _initPromise;
+async function ensureReady(): Promise<Web3Auth> {
+  if (!_initPromise) preloadWeb3Auth();
+  const w = await _initPromise!;
   return w;
 }
 
@@ -56,44 +53,88 @@ export interface Web3AuthUser {
   email: string;
   name: string;
   profileImage?: string;
-  typeOfLogin?: string;
 }
 
 /**
- * Trigger social OAuth login (Google / Twitter / Apple).
- * Opens a popup for OAuth; resolves after authentication.
- * Times out after 3 minutes so the loading screen never hangs forever.
+ * Social OAuth login.
+ *
+ * Strategy:
+ * 1. If already connected (restored session), return user immediately.
+ * 2. Otherwise call connectTo and wait up to 2 minutes.
+ * 3. If connectTo throws OR times out, the OAuth popup may still have
+ *    completed on Web3Auth's end — we reset + re-init and check the
+ *    restored session before giving up.
  */
 export async function loginWithSocial(provider: SocialProvider): Promise<Web3AuthUser> {
-  const w = await initWeb3Auth();
+  let w = await ensureReady();
+
   if ((w as any).status === "connected") {
     try { await w.logout(); } catch {}
   }
-  await withTimeout(
-    (w as any).connectTo("auth", { authConnection: provider }),
-    180_000,
-    "Social login",
+
+  const connectPromise = (w as any).connectTo("auth", { authConnection: provider });
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("__TIMEOUT__")), CONNECT_TIMEOUT),
   );
+
+  try {
+    await Promise.race([connectPromise, timeout]);
+  } catch (err: any) {
+    const msg = String(err?.message ?? "");
+
+    // If "not ready" or timeout: Web3Auth may have stored the session already.
+    // Reset + re-init to surface the existing session.
+    if (msg.includes("not ready") || msg === "__TIMEOUT__" || msg.includes("timed out")) {
+      _instance = null;
+      _initPromise = null;
+      preloadWeb3Auth();
+      const fresh = await _initPromise!;
+      if ((fresh as any).status === "connected") {
+        return extractUserInfo(fresh);
+      }
+      throw new Error("Sign-in window was closed or didn't respond. Please try again.");
+    }
+
+    // User closed popup
+    if (msg.toLowerCase().includes("user closed") || msg.toLowerCase().includes("popup")) {
+      throw new Error("Sign-in was cancelled.");
+    }
+
+    throw err;
+  }
+
   return extractUserInfo(w);
 }
 
-/**
- * Trigger email passwordless login.
- * Web3Auth sends a magic-link / OTP to the email address.
- */
+/** Email magic-link login. */
 export async function loginWithEmail(email: string): Promise<Web3AuthUser> {
-  const w = await initWeb3Auth();
+  let w = await ensureReady();
+
   if ((w as any).status === "connected") {
     try { await w.logout(); } catch {}
   }
-  await withTimeout(
-    (w as any).connectTo("auth", {
-      authConnection: "email_passwordless",
-      extraLoginOptions: { login_hint: email },
-    }),
-    300_000,
-    "Email login",
+
+  const connectPromise = (w as any).connectTo("auth", {
+    authConnection: "email_passwordless",
+    extraLoginOptions: { login_hint: email },
+  });
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("__TIMEOUT__")), 300_000),
   );
+
+  try {
+    await Promise.race([connectPromise, timeout]);
+  } catch (err: any) {
+    const msg = String(err?.message ?? "");
+    if (msg === "__TIMEOUT__") {
+      throw new Error("Email sign-in timed out. Please check your inbox and try again.");
+    }
+    if (msg.toLowerCase().includes("user closed") || msg.toLowerCase().includes("popup")) {
+      throw new Error("Sign-in was cancelled.");
+    }
+    throw err;
+  }
+
   return extractUserInfo(w);
 }
 
@@ -104,7 +145,6 @@ async function extractUserInfo(w: Web3Auth): Promise<Web3AuthUser> {
     email: (info as any).email ?? "",
     name: (info as any).name ?? "",
     profileImage: (info as any).profileImage ?? "",
-    typeOfLogin: (info as any).typeOfLogin ?? "",
   };
 }
 

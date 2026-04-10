@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { saveUser } from "@/lib/auth";
 import { Particles } from "@/components/particles";
-import { loginWithSocial, loginWithEmail, type SocialProvider } from "@/lib/web3auth";
+import { loginWithSocial, loginWithEmail, preloadWeb3Auth, type SocialProvider } from "@/lib/web3auth";
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 
@@ -47,6 +47,9 @@ export default function Login() {
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState("Verifying identity...");
   const [error, setError] = useState<string | null>(null);
+
+  // Pre-warm Web3Auth so the SDK is fully ready before the user clicks
+  useEffect(() => { preloadWeb3Auth(); }, []);
 
   const finishLogin = async (
     idToken: string,
