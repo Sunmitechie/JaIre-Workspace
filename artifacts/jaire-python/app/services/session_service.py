@@ -1,29 +1,28 @@
 """
 Session lifecycle service — check-in, real-time tracking, check-out settlement.
 
+Revenue model: JaIre earns via the 0.5% FX spread applied at the payment stage
+(NGN → USDC conversion). No Kamino yield farming.
+
 Flow:
   CHECK-IN:
     1. Resolve user + wallet
     2. Calculate original_amount = hourly_rate × planned_hours
     3. Vault signs Memo TX anchoring the escrow lock on-chain → escrow_tx (REAL TX)
-    4. Vault signs Memo TX recording Kamino deposit → kamino_deposit_tx (REAL TX)
-    5. Persist session record (status=active)
+    4. Persist session record (status=active)
 
   CHECK-OUT:
     1. Load active session
     2. Calculate actual_seconds = now - check_in_time
-    3. Calculate Kamino yield at 5% APY for duration
-    4. time_cost = min(hourly_rate × actual_hours, original_amount)
-    5. host_payment  = time_cost × 0.85
-    6. treasury_take = time_cost × 0.15
-    7. user_refund   = original_amount - time_cost
-    8. Vault signs REAL SPL transfer → user wallet (refund) → user_refund_tx
-    9. Vault signs Memo TX recording host payment → host_payment_tx (REAL TX)
-   10. Vault signs Memo TX recording Kamino withdrawal + yield → kamino_withdraw_tx (REAL TX)
-   11. Update session (status=settled)
+    3. time_cost = min(hourly_rate × actual_hours, original_amount)
+    4. host_payment  = time_cost × 0.85
+    5. treasury_take = time_cost × 0.15
+    6. user_refund   = original_amount - time_cost
+    7. Vault sends REAL SPL transfer → user wallet (refund)
+    8. Vault signs Memo TX recording host/treasury split → host_payment_tx (REAL TX)
 
-Every escrow, Kamino, and settlement event is anchored on Solana via a real
-transaction — viewable on Solana Explorer, Solscan, and Solana.fm.
+Every escrow and settlement event is anchored on Solana via a real transaction —
+viewable on Solana Explorer, Solscan, and Solana.fm.
 """
 
 import json
@@ -38,12 +37,6 @@ from sqlalchemy import select
 
 from app.models import JaireUser, JaireWallet, JaireSession
 from app.services.solana_service import get_solana_service
-import app.services.wallet_service as mpc_wallet_svc
-from app.services.kamino_service import (
-    reconstruct_position,
-    estimate_yield,
-    SIMULATED_APY,
-)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,26 +45,25 @@ logger = logging.getLogger(__name__)
 WORKSPACES = {
     "ws-001": {
         "name": "The Hub — Open Floor",
-        "hourly_rate_usdc": Decimal("0.9375"),   # ₦1,500 at old rate
+        "hourly_rate_usdc": Decimal("0.9375"),
     },
     "ws-002": {
         "name": "Founders Suite — Private Office",
-        "hourly_rate_usdc": Decimal("2.1875"),   # ₦3,500 at old rate
+        "hourly_rate_usdc": Decimal("2.1875"),
     },
     "ws-003": {
         "name": "Blockchain Lounge — Crypto Corner",
-        "hourly_rate_usdc": Decimal("1.5625"),   # ₦2,500 at old rate
+        "hourly_rate_usdc": Decimal("1.5625"),
     },
     "ws-004": {
         "name": "Board Room — Premium Meeting",
-        "hourly_rate_usdc": Decimal("5.0000"),   # ₦8,000 at old rate
+        "hourly_rate_usdc": Decimal("5.0000"),
     },
 }
 
 HOST_SHARE = Decimal("0.85")
 TREASURY_SHARE = Decimal("0.15")
 MIN_REFUND_USDC = Decimal("0.001")
-SECONDS_PER_YEAR = 365 * 24 * 3600
 
 SOLANA_CLUSTER = "devnet"
 
@@ -136,9 +128,8 @@ async def check_in(
 ) -> JaireSession:
     """
     Check a user into a workspace.
-    Anchors two real Solana transactions:
-      1. Escrow lock Memo TX (vault signs)
-      2. Kamino deposit Memo TX (vault signs, with APY metadata)
+    Anchors one real Solana transaction:
+      1. Escrow lock Memo TX (vault signs) — locks the session amount on-chain
     """
     workspace = WORKSPACES.get(workspace_id)
     if not workspace:
@@ -175,19 +166,6 @@ async def check_in(
     escrow_tx = await solana.send_memo_from_vault(escrow_memo, wait_for_confirm=True)
     logger.info(f"[CHECK-IN] ✅ Escrow lock anchored on-chain: {escrow_tx}")
 
-    # ── TX 2: Kamino Deposit — Vault records deposit on-chain ──────────────
-    kamino_memo = json.dumps({
-        "jaire": "KAMINO_DEPOSIT",
-        "session_amount_usdc": str(original_amount),
-        "apy_pct": SIMULATED_APY * 100,
-        "vault": vault_addr,
-        "note": "Kamino Finance mainnet: KLend2g3cZ87astpptFc4HcnKoGmJ7aSRrBDVH9tVSN",
-        "ts": check_in_time.isoformat(),
-    }, separators=(",", ":"))
-
-    kamino_deposit_tx = await solana.send_memo_from_vault(kamino_memo, wait_for_confirm=True)
-    logger.info(f"[CHECK-IN] ✅ Kamino deposit anchored on-chain: {kamino_deposit_tx}")
-
     # ── Persist session ────────────────────────────────────────────────────
     session = JaireSession(
         user_id=user.id,
@@ -197,10 +175,9 @@ async def check_in(
         planned_hours=Decimal(str(planned_hours)),
         original_amount_usdc=original_amount,
         check_in_time=check_in_time,
-        is_kamino_active=True,
+        is_kamino_active=False,
         is_test_mode=is_test_mode,
         escrow_tx=escrow_tx,
-        kamino_deposit_tx=kamino_deposit_tx,
         status="active",
     )
 
@@ -208,10 +185,7 @@ async def check_in(
     await db.flush()
     await db.refresh(session)
 
-    logger.info(
-        f"[CHECK-IN] Session {session.id} active. "
-        f"escrow_tx={escrow_tx[:20]}… kamino_tx={kamino_deposit_tx[:20]}…"
-    )
+    logger.info(f"[CHECK-IN] Session {session.id} active. escrow_tx={escrow_tx[:20]}…")
     return session
 
 
@@ -224,11 +198,6 @@ def get_realtime_status(session: JaireSession) -> dict:
     current_cost = (hourly_rate * Decimal(str(elapsed_seconds)) / Decimal("3600")).quantize(Decimal("0.000001"))
     current_cost = min(current_cost, Decimal(str(session.original_amount_usdc)))
 
-    estimated_yield = estimate_yield(
-        principal_usdc=Decimal(str(session.original_amount_usdc)),
-        duration_seconds=elapsed,
-    )
-
     return {
         "session_id": str(session.id),
         "status": session.status,
@@ -238,12 +207,9 @@ def get_realtime_status(session: JaireSession) -> dict:
         "elapsed_hms": _hms(elapsed_seconds),
         "current_cost_usdc": float(current_cost),
         "original_amount_usdc": float(session.original_amount_usdc),
-        "estimated_yield_usdc": float(estimated_yield),
         "planned_hours": float(session.planned_hours),
         "hourly_rate_usdc": float(session.hourly_rate_usdc),
-        "is_kamino_active": session.is_kamino_active,
         "escrow_tx": session.escrow_tx,
-        "kamino_deposit_tx": session.kamino_deposit_tx,
         "explorer": _explorer(session.escrow_tx) if session.escrow_tx else {},
     }
 
@@ -254,10 +220,9 @@ async def check_out(
     mint_override: Optional[str] = None,
 ) -> dict:
     """
-    Check out from a session. Produces 2-3 real Solana transactions:
-      - Kamino withdraw Memo TX (with yield calculation anchored on-chain)
+    Check out from a session. Produces 1-2 real Solana transactions:
       - User refund SPL transfer (if refund ≥ dust threshold) — REAL SPL TX
-      - Host payment Memo TX (anchored on-chain)
+      - Host/treasury settlement Memo TX — anchored on-chain (REAL TX)
     """
     stmt = select(JaireSession).where(JaireSession.id == session_id)
     result = await db.execute(stmt)
@@ -283,39 +248,16 @@ async def check_out(
     if user_refund < MIN_REFUND_USDC:
         user_refund = Decimal("0")
 
-    # Kamino yield: pro-rated 5% APY for the exact duration
-    yield_amount = Decimal(str(SIMULATED_APY)) * original_amount * (
-        Decimal(str(elapsed_seconds)) / Decimal(str(SECONDS_PER_YEAR))
-    )
-    kamino_yield = yield_amount.quantize(Decimal("0.000001"))
-
     logger.info(
         f"[CHECK-OUT] Session {session_id} | {_hms(elapsed_seconds)} | "
-        f"cost={time_cost} host={host_payment} treasury={treasury_payment} "
-        f"refund={user_refund} yield={kamino_yield}"
+        f"cost={time_cost} host={host_payment} treasury={treasury_payment} refund={user_refund}"
     )
 
     solana = get_solana_service()
     vault_addr = str(solana.vault_pubkey)
     wallet = await _get_active_wallet(db, session.user_id)
 
-    # ── TX 3: Kamino Withdraw + Yield — anchored on-chain ──────────────────
-    kamino_withdraw_memo = json.dumps({
-        "jaire": "KAMINO_WITHDRAW",
-        "session_id": session_id,
-        "principal_usdc": str(original_amount),
-        "yield_earned_usdc": str(kamino_yield),
-        "apy_pct": SIMULATED_APY * 100,
-        "duration_seconds": elapsed_seconds,
-        "total_usdc": str(original_amount + kamino_yield),
-        "vault": vault_addr,
-        "ts": now.isoformat(),
-    }, separators=(",", ":"))
-
-    kamino_withdraw_tx = await solana.send_memo_from_vault(kamino_withdraw_memo, wait_for_confirm=True)
-    logger.info(f"[CHECK-OUT] ✅ Kamino withdraw anchored: {kamino_withdraw_tx}")
-
-    # ── TX 4: User Refund — REAL SPL transfer (vault → user wallet) ────────
+    # ── TX 2: User Refund — REAL SPL transfer (vault → user wallet) ────────
     user_refund_tx = None
     if user_refund >= MIN_REFUND_USDC and wallet:
         try:
@@ -324,27 +266,27 @@ async def check_out(
                 amount_usdc=float(user_refund),
                 mint_pubkey_str=mint_override,
             )
-            # Wait for confirmation so it's visible immediately
             await solana._confirm_transaction(user_refund_tx)
             logger.info(f"[CHECK-OUT] ✅ User refund SPL TX: {user_refund_tx}")
         except Exception as e:
             logger.error(f"[CHECK-OUT] User refund failed: {e}")
             user_refund_tx = f"FAILED:{e}"
 
-    # ── TX 5: Host Payment — anchored on-chain ─────────────────────────────
-    host_memo = json.dumps({
-        "jaire": "HOST_PAYMENT",
+    # ── TX 3: Settlement Anchor — host + treasury split on-chain ───────────
+    settlement_memo = json.dumps({
+        "jaire": "SETTLEMENT",
         "session_id": session_id,
         "host_payment_usdc": str(host_payment),
         "treasury_payment_usdc": str(treasury_payment),
+        "user_refund_usdc": str(user_refund),
         "workspace": session.workspace_id,
         "duration_seconds": elapsed_seconds,
         "vault": vault_addr,
         "ts": now.isoformat(),
     }, separators=(",", ":"))
 
-    host_payment_tx = await solana.send_memo_from_vault(host_memo, wait_for_confirm=True)
-    logger.info(f"[CHECK-OUT] ✅ Host payment anchored: {host_payment_tx}")
+    settlement_tx = await solana.send_memo_from_vault(settlement_memo, wait_for_confirm=True)
+    logger.info(f"[CHECK-OUT] ✅ Settlement anchored: {settlement_tx}")
 
     # ── Update session ──────────────────────────────────────────────────────
     session.check_out_time = now
@@ -353,9 +295,7 @@ async def check_out(
     session.host_payment_usdc = host_payment
     session.treasury_payment_usdc = treasury_payment
     session.user_refund_usdc = user_refund
-    session.kamino_yield_usdc = kamino_yield
-    session.kamino_withdraw_tx = kamino_withdraw_tx
-    session.host_payment_tx = host_payment_tx
+    session.host_payment_tx = settlement_tx
     session.user_refund_tx = user_refund_tx
     session.is_kamino_active = False
     session.status = "settled"
@@ -363,13 +303,10 @@ async def check_out(
 
     await db.flush()
 
-    # Build explorer links for all 4-5 TXs
     tx_map = {
         "escrow_lock_tx": session.escrow_tx,
-        "kamino_deposit_tx": session.kamino_deposit_tx,
-        "kamino_withdraw_tx": kamino_withdraw_tx,
         "user_refund_tx": user_refund_tx,
-        "host_payment_tx": host_payment_tx,
+        "settlement_tx": settlement_tx,
     }
 
     return {
@@ -380,7 +317,6 @@ async def check_out(
 
         "original_amount_usdc": float(original_amount),
         "time_cost_usdc": float(time_cost),
-        "kamino_yield_usdc": float(kamino_yield),
 
         "host_payment_usdc": float(host_payment),
         "treasury_payment_usdc": float(treasury_payment),
@@ -389,17 +325,19 @@ async def check_out(
         "transactions": {
             k: {
                 "signature": v,
-                "explorer": _explorer(v) if v and not v.startswith("FAILED") else None,
+                "explorer": _explorer(v) if v and not str(v).startswith("FAILED") else None,
             }
             for k, v in tx_map.items()
         },
 
         "settlement_breakdown": {
             "1_escrowed_at_checkin": f"{original_amount} USDC locked by JaIre vault",
-            "2_kamino_yield_earned": f"{kamino_yield} USDC @ {SIMULATED_APY * 100:.1f}% APY for {_hms(elapsed_seconds)}",
-            "3_time_cost": f"{time_cost} USDC ({_hms(elapsed_seconds)} @ {hourly_rate} USDC/hr)",
-            "4_host_receives": f"{host_payment} USDC (85%)",
-            "5_treasury_receives": f"{treasury_payment} USDC (15% of cost) + {kamino_yield} USDC yield",
-            "6_user_refunded": f"{user_refund} USDC returned to {wallet.pubkey[:16]}…" if user_refund > 0 and wallet else "No refund",
+            "2_time_cost": f"{time_cost} USDC ({_hms(elapsed_seconds)} @ {hourly_rate} USDC/hr)",
+            "3_host_receives": f"{host_payment} USDC (85%)",
+            "4_treasury_receives": f"{treasury_payment} USDC (15% of session cost)",
+            "5_user_refunded": (
+                f"{user_refund} USDC returned to {wallet.pubkey[:16]}…"
+                if user_refund > 0 and wallet else "No refund (full session used)"
+            ),
         },
     }

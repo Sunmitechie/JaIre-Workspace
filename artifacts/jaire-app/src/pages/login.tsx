@@ -56,31 +56,43 @@ export default function Login() {
     provider: string,
   ) => {
     setStep("wallet");
-    setStatusMsg("Generating your Solana wallet...");
+    setStatusMsg("Setting up your account...");
 
-    const res = await fetch(`${BASE_URL}/api/mpc/wallet`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id_token: idToken }),
-    });
+    // Derive MPC wallet — non-fatal; we still let the user in on failure
+    let walletAddress: string | undefined;
+    let verifierId: string | undefined;
+    let resolvedEmail = email;
+    let resolvedName = name;
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error((err as any).error || "Wallet derivation failed");
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const res = await fetch(`${BASE_URL}/api/mpc/wallet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id_token: idToken }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (res.ok) {
+        const data = await res.json();
+        walletAddress = data.wallet_address;
+        verifierId = data.verifier_id;
+        resolvedEmail = data.email || email;
+        resolvedName = data.name || name;
+      }
+    } catch {
+      // wallet derivation failed — non-fatal, user still gets in
     }
 
-    const data = await res.json();
-    const walletAddress: string = data.wallet_address;
-    const resolvedEmail: string = data.email || email;
-    const resolvedName: string = data.name || name;
-
     setStatusMsg("Linking your JaIre account...");
-    await delay(500);
+    await delay(400);
     setStatusMsg("Almost ready!");
-    await delay(350);
+    await delay(300);
 
     saveUser({
-      id: `w3a_${data.verifier_id?.replace(/[^a-z0-9]/gi, "_") ?? Date.now()}`,
+      id: `w3a_${verifierId?.replace(/[^a-z0-9]/gi, "_") ?? Date.now()}`,
       name: resolvedName || resolvedEmail.split("@")[0] || "JaIre User",
       email: resolvedEmail,
       avatar: profileImage || `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(resolvedEmail)}`,

@@ -271,36 +271,42 @@ async def full_flow_test(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Runs the complete JaIre payment lifecycle on devnet with REAL on-chain transactions:
+    Runs the complete JaIre payment lifecycle on devnet with REAL on-chain transactions.
+    Revenue model: 0.5% FX spread on every NGN→USDC conversion (no Kamino).
 
-      Step 1  Paystack oracle     — live NGN→USDC rate
+      Step 1  Oracle              — live NGN→USDC rate + 0.5% spread applied
       Step 2  Vault disbursement  — vault SPL transfers USDC to user wallet (REAL TX)
       Step 3  Escrow lock         — vault Memo TX anchors check-in on-chain (REAL TX)
-      Step 4  Kamino deposit      — vault Memo TX records APY deposit (REAL TX)
-      Step 5  Live ticking        — 5 second real-time status snapshot
-      Step 6  Kamino withdraw     — vault Memo TX records yield earned (REAL TX)
-      Step 7  Settlement          — vault SPL transfers refund to user (REAL TX)
-      Step 8  Host payment log    — vault Memo TX records host split (REAL TX)
+      Step 4  Live ticking        — 5 second real-time billing snapshot
+      Step 5  Settlement          — vault SPL refund to user (REAL TX) + settlement Memo TX (REAL TX)
     """
     _require_devnet()
     import time
     from app.services import payment_service, session_service
     from app.services.oracle_service import convert_to_usdc
+    from decimal import Decimal
 
     results = {}
+    FX_SPREAD = 0.005
 
     try:
-        # ── Step 1: Oracle ──────────────────────────────────────────────────
+        # ── Step 1: Oracle + FX spread preview ─────────────────────────────
         oracle = await convert_to_usdc(body.amount_ngn, "NGN")
+        raw_usdc = oracle["amount_usdc"]
+        spread_usdc = round(raw_usdc * FX_SPREAD, 6)
+        user_gets_usdc = round(raw_usdc - spread_usdc, 6)
         results["step1_oracle"] = {
             "amount_ngn": body.amount_ngn,
-            "amount_usdc": oracle["amount_usdc"],
+            "raw_usdc": raw_usdc,
+            "fx_spread_pct": "0.5%",
+            "jaire_earns_usdc": spread_usdc,
+            "user_receives_usdc": user_gets_usdc,
             "rate": oracle["rate"],
             "source": oracle["source"],
-            "status": "✅ Live rate fetched",
+            "status": "✅ Live rate fetched — 0.5% FX spread applied",
         }
 
-        # ── Step 2: Vault Disbursement (Paystack payment settled) ───────────
+        # ── Step 2: Vault Disbursement (fiat payment settled, spread deducted) ──
         ts = int(time.time())
         payment = await payment_service.process_payment(
             db=db,
@@ -315,14 +321,14 @@ async def full_flow_test(
         results["step2_vault_disbursement"] = {
             "payment_id": str(payment.id),
             "amount_ngn": float(payment.amount_ngn),
-            "amount_usdc": float(payment.amount_usdc),
+            "amount_usdc_after_spread": float(payment.amount_usdc),
             "exchange_rate": float(payment.exchange_rate),
             "tx_signature": payment.tx_signature,
             "explorer": f"https://solscan.io/tx/{payment.tx_signature}?cluster=devnet",
-            "status": "✅ USDC disbursed from vault to user wallet",
+            "status": "✅ USDC disbursed from vault to user wallet (post-spread)",
         }
 
-        # ── Step 3-4: Check-In (escrow lock + Kamino deposit on-chain) ──────
+        # ── Step 3: Check-In — escrow lock anchored on-chain ───────────────
         session = await session_service.check_in(
             db=db,
             user_identifier=body.email,
@@ -339,57 +345,47 @@ async def full_flow_test(
             "explorer": f"https://solscan.io/tx/{session.escrow_tx}?cluster=devnet",
             "status": "✅ Escrow lock anchored on Solana",
         }
-        results["step4_kamino_deposit"] = {
-            "session_id": str(session.id),
-            "principal_usdc": float(session.original_amount_usdc),
-            "apy_pct": 5.0,
-            "tx_signature": session.kamino_deposit_tx,
-            "explorer": f"https://solscan.io/tx/{session.kamino_deposit_tx}?cluster=devnet",
-            "status": "✅ Kamino deposit anchored on Solana (5% APY simulation)",
-        }
 
-        # ── Step 5: Live status snapshot (let 5 sec pass) ───────────────────
+        # ── Step 4: Live status snapshot (let 5 sec pass) ───────────────────
         time.sleep(5)
         live = session_service.get_realtime_status(session)
-        results["step5_live_ticking"] = {
+        results["step4_live_ticking"] = {
             "elapsed_seconds": live["elapsed_seconds"],
             "elapsed_hms": live["elapsed_hms"],
             "current_cost_usdc": live["current_cost_usdc"],
-            "estimated_yield_usdc": live["estimated_yield_usdc"],
             "status": "✅ Billing ticking per second",
         }
 
-        # ── Steps 6-8: Check-Out (Kamino withdraw + settlement on-chain) ────
+        # ── Step 5: Check-Out — refund SPL TX + settlement Memo TX ──────────
         checkout = await session_service.check_out(
             db=db,
             session_id=str(session.id),
             mint_override=body.mint_pubkey,
         )
-        results["step6_kamino_withdraw"] = {
-            "tx_signature": checkout["transactions"]["kamino_withdraw_tx"]["signature"],
-            "explorer": checkout["transactions"]["kamino_withdraw_tx"].get("explorer", {}).get("solscan"),
-            "principal_usdc": checkout["original_amount_usdc"],
-            "yield_earned_usdc": checkout["kamino_yield_usdc"],
-            "status": "✅ Kamino withdrawal anchored on Solana",
-        }
-        results["step7_user_refund"] = {
-            "tx_signature": checkout["transactions"]["user_refund_tx"]["signature"],
-            "explorer": (checkout["transactions"]["user_refund_tx"].get("explorer") or {}).get("solscan"),
-            "amount_usdc": checkout["user_refund_usdc"],
-            "status": "✅ USDC refund sent to user wallet" if checkout["user_refund_usdc"] > 0 else "No refund (fully consumed)",
-        }
-        results["step8_host_payment"] = {
-            "tx_signature": checkout["transactions"]["host_payment_tx"]["signature"],
-            "explorer": checkout["transactions"]["host_payment_tx"].get("explorer", {}).get("solscan"),
+        refund_tx = checkout["transactions"].get("user_refund_tx", {})
+        settlement_tx = checkout["transactions"].get("settlement_tx", {})
+        results["step5_settlement"] = {
+            "user_refund_tx": refund_tx.get("signature"),
+            "user_refund_usdc": checkout["user_refund_usdc"],
+            "refund_explorer": (refund_tx.get("explorer") or {}).get("solscan"),
+            "settlement_tx": settlement_tx.get("signature"),
+            "settlement_explorer": (settlement_tx.get("explorer") or {}).get("solscan"),
             "host_usdc": checkout["host_payment_usdc"],
             "treasury_usdc": checkout["treasury_payment_usdc"],
-            "status": "✅ Host payment anchored on Solana",
+            "status": "✅ Refund sent + settlement anchored on Solana",
         }
+
         results["settlement_breakdown"] = checkout["settlement_breakdown"]
+        results["revenue_summary"] = {
+            "fx_spread_earned_usdc": spread_usdc,
+            "fx_spread_pct": "0.5%",
+            "session_treasury_share_usdc": checkout["treasury_payment_usdc"],
+            "note": "JaIre earns 0.5% on every NGN→USDC exchange + 15% of session cost",
+        }
         results["summary"] = {
-            "total_on_chain_txs": 5,
+            "total_on_chain_txs": 3,
             "real_spl_transfers": 2,
-            "memo_anchors": 3,
+            "memo_anchors": 2,
             "network": "Solana devnet",
             "vault": str(get_solana_service().vault_pubkey),
         }
