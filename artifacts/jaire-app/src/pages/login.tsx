@@ -2,8 +2,11 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { saveUser } from "@/lib/auth";
 import { Particles } from "@/components/particles";
+import { loginWithSocial, loginWithEmail, type SocialProvider } from "@/lib/web3auth";
 
-const PROVIDERS = [
+const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
+
+const SOCIAL_PROVIDERS: { id: SocialProvider; label: string; icon: React.ReactNode }[] = [
   {
     id: "google",
     label: "Continue with Google",
@@ -15,7 +18,6 @@ const PROVIDERS = [
         <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
       </svg>
     ),
-    names: ["Chidi Okonkwo", "Amara Eze", "Femi Adeyemi", "Zara Bello"],
   },
   {
     id: "twitter",
@@ -25,7 +27,6 @@ const PROVIDERS = [
         <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
       </svg>
     ),
-    names: ["Kemi Osei", "Tobenna J.", "Iyanu B.", "Solape A."],
   },
   {
     id: "apple",
@@ -35,132 +36,118 @@ const PROVIDERS = [
         <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
       </svg>
     ),
-    names: ["Akin T.", "Ngozi O.", "Dami A.", "Tunde F."],
   },
 ];
 
-const STEPS = [
-  "Verifying identity...",
-  "Generating your Solana wallet...",
-  "Requesting devnet airdrop...",
-  "Linking your JaIre account...",
-  "Almost ready!",
-];
+type Step = "choose" | "popup" | "wallet" | "done";
 
 export default function Login() {
   const [, setLocation] = useLocation();
-  const [loading, setLoading] = useState<string | null>(null);
-  const [step, setStep] = useState<"choose" | "securing">("choose");
-  const [stepLabel, setStepLabel] = useState(STEPS[0]);
+  const [step, setStep] = useState<Step>("choose");
+  const [activeProvider, setActiveProvider] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState("Verifying identity...");
   const [error, setError] = useState<string | null>(null);
 
-  const handleLogin = async (providerId: string) => {
-    setLoading(providerId);
-    setStep("securing");
+  const finishLogin = async (
+    idToken: string,
+    email: string,
+    name: string,
+    profileImage: string,
+    provider: string,
+  ) => {
+    setStep("wallet");
+    setStatusMsg("Generating your Solana wallet...");
+
+    const res = await fetch(`${BASE_URL}/api/mpc/wallet`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id_token: idToken }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).error || "Wallet derivation failed");
+    }
+
+    const data = await res.json();
+    const walletAddress: string = data.wallet_address;
+    const resolvedEmail: string = data.email || email;
+    const resolvedName: string = data.name || name;
+
+    setStatusMsg("Linking your JaIre account...");
+    await delay(500);
+    setStatusMsg("Almost ready!");
+    await delay(350);
+
+    saveUser({
+      id: `w3a_${data.verifier_id?.replace(/[^a-z0-9]/gi, "_") ?? Date.now()}`,
+      name: resolvedName || resolvedEmail.split("@")[0] || "JaIre User",
+      email: resolvedEmail,
+      avatar: profileImage || `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(resolvedEmail)}`,
+      provider: provider as any,
+      walletAddress,
+      walletNetwork: "devnet",
+      walletCreatedAt: new Date().toISOString(),
+      idToken,
+    });
+
+    setStep("done");
+    setLocation("/baire");
+  };
+
+  const handleSocial = async (provider: SocialProvider) => {
+    if (step !== "choose") return;
+    setActiveProvider(provider);
+    setStep("popup");
+    setStatusMsg("Opening sign-in window...");
     setError(null);
 
-    const provider = PROVIDERS.find((p) => p.id === providerId);
-    const name = provider?.names[Math.floor(Math.random() * (provider?.names.length ?? 1))] ?? "User";
-    const seed = Date.now();
-    const email = `${providerId}_${seed}@jaire-demo.app`;
-
     try {
-      setStepLabel(STEPS[0]);
-      await delay(600);
-
-      setStepLabel(STEPS[1]);
-      await delay(500);
-
-      const walletRes = await fetch("/api/jaire/wallet/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_identifier: email, user_name: name }),
-      });
-
-      if (!walletRes.ok) throw new Error("Wallet creation failed");
-      const walletData = await walletRes.json();
-      const walletAddress: string = walletData.pubkey;
-
-      setStepLabel(STEPS[2]);
-      await delay(800);
-
-      setStepLabel(STEPS[3]);
-      await delay(500);
-
-      setStepLabel(STEPS[4]);
-      await delay(400);
-
-      saveUser({
-        id: `user_${seed}`,
-        name,
-        email,
-        avatar: `https://api.dicebear.com/7.x/shapes/svg?seed=${providerId}${seed}`,
-        provider: providerId as any,
-        walletAddress,
-        walletNetwork: walletData.network ?? "devnet",
-        walletCreatedAt: new Date().toISOString(),
-      });
-
-      setLocation("/baire");
-    } catch (err) {
-      console.error("Login error:", err);
-      setError("Couldn't create your wallet. Please try again.");
+      const { idToken, email, name, profileImage } = await loginWithSocial(provider);
+      await finishLogin(idToken, email, name, profileImage ?? "", provider);
+    } catch (err: any) {
+      console.error("Web3Auth login error:", err);
+      const msg = err?.message ?? "";
+      if (msg.toLowerCase().includes("user closed") || msg.toLowerCase().includes("popup closed")) {
+        setError("Sign-in was cancelled. Please try again.");
+      } else {
+        setError(msg || "Sign-in failed. Please try again.");
+      }
       setStep("choose");
-      setLoading(null);
+      setActiveProvider(null);
     }
   };
 
   const handleEmailLogin = async () => {
-    const email = (document.getElementById("email-input") as HTMLInputElement)?.value?.trim();
+    const emailEl = document.getElementById("email-input") as HTMLInputElement;
+    const email = emailEl?.value?.trim();
     if (!email || !email.includes("@")) {
-      setError("Please enter a valid email.");
+      setError("Please enter a valid email address.");
       return;
     }
-    setLoading("email");
-    setStep("securing");
+    if (step !== "choose") return;
+    setActiveProvider("email");
+    setStep("popup");
+    setStatusMsg("Sending magic link to your email...");
     setError(null);
 
-    const name = email.split("@")[0] ?? "User";
-
     try {
-      setStepLabel(STEPS[0]);
-      await delay(500);
-      setStepLabel(STEPS[1]);
-
-      const walletRes = await fetch("/api/jaire/wallet/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_identifier: email, user_name: name }),
-      });
-
-      if (!walletRes.ok) throw new Error("Wallet creation failed");
-      const walletData = await walletRes.json();
-
-      setStepLabel(STEPS[2]);
-      await delay(700);
-      setStepLabel(STEPS[3]);
-      await delay(400);
-      setStepLabel(STEPS[4]);
-      await delay(300);
-
-      saveUser({
-        id: `user_${Date.now()}`,
-        name,
-        email,
-        avatar: `https://api.dicebear.com/7.x/shapes/svg?seed=email${Date.now()}`,
-        provider: "email",
-        walletAddress: walletData.pubkey,
-        walletNetwork: walletData.network ?? "devnet",
-        walletCreatedAt: new Date().toISOString(),
-      });
-
-      setLocation("/baire");
-    } catch (err) {
-      setError("Couldn't create your wallet. Please try again.");
+      const { idToken, email: w3aEmail, name, profileImage } = await loginWithEmail(email);
+      await finishLogin(idToken, w3aEmail || email, name, profileImage ?? "", "email");
+    } catch (err: any) {
+      console.error("Web3Auth email login error:", err);
+      const msg = err?.message ?? "";
+      if (msg.toLowerCase().includes("user closed") || msg.toLowerCase().includes("popup closed")) {
+        setError("Sign-in was cancelled. Please try again.");
+      } else {
+        setError(msg || "Email sign-in failed. Please try again.");
+      }
       setStep("choose");
-      setLoading(null);
+      setActiveProvider(null);
     }
   };
+
+  const isLoading = step !== "choose" && step !== "done";
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
@@ -186,7 +173,43 @@ export default function Login() {
         </div>
 
         <div className="glass-card rounded-2xl p-8 border-gradient">
-          {step === "choose" ? (
+          {step === "popup" || step === "wallet" ? (
+            <div className="py-8 flex flex-col items-center gap-6">
+              <div className="relative w-20 h-20">
+                <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-spin" style={{ borderTopColor: "hsl(43 100% 50%)", animationDuration: "1s" }} />
+                <div className="absolute inset-2 rounded-full border border-purple-500/30 animate-spin" style={{ borderTopColor: "hsl(262 83% 66%)", animationDuration: "1.5s", animationDirection: "reverse" }} />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <svg className="w-8 h-8 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
+              </div>
+              <div className="text-center">
+                <p className="font-semibold text-lg mb-1">
+                  {step === "popup" ? "Authenticating" : "Setting up your account"}
+                </p>
+                <p className="text-muted-foreground text-sm" key={statusMsg}>{statusMsg}</p>
+                {step === "popup" && (
+                  <p className="text-xs text-muted-foreground/60 mt-2">
+                    {activeProvider === "email" ? "Check your email for a magic link." : "Complete sign-in in the popup window."}
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-1.5">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
+                ))}
+              </div>
+              {step === "popup" && (
+                <button
+                  onClick={() => { setStep("choose"); setActiveProvider(null); setError(null); }}
+                  className="text-xs text-muted-foreground hover:text-foreground underline"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          ) : (
             <div className="space-y-3">
               {error && (
                 <div className="px-4 py-3 rounded-xl text-sm text-red-400 bg-red-400/8 border border-red-400/20 mb-2">
@@ -194,12 +217,12 @@ export default function Login() {
                 </div>
               )}
 
-              {PROVIDERS.map((p) => (
+              {SOCIAL_PROVIDERS.map((p) => (
                 <button
                   key={p.id}
-                  onClick={() => handleLogin(p.id)}
-                  disabled={!!loading}
-                  className="w-full flex items-center gap-4 px-5 py-4 rounded-xl bg-white/4 hover:bg-white/8 border border-white/8 hover:border-white/16 transition-all duration-200 text-left group disabled:opacity-50"
+                  onClick={() => handleSocial(p.id)}
+                  disabled={isLoading}
+                  className="w-full flex items-center gap-4 px-5 py-4 rounded-xl bg-white/4 hover:bg-white/8 border border-white/8 hover:border-white/16 transition-all duration-200 text-left group disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <span className="shrink-0">{p.icon}</span>
                   <span className="font-medium text-[15px]">{p.label}</span>
@@ -224,10 +247,12 @@ export default function Login() {
                   type="email"
                   placeholder="you@example.com"
                   className="w-full h-12 px-4 rounded-xl text-sm bg-white/4 border border-white/8 focus:outline-none focus:border-primary/50 focus:bg-white/6 transition-all placeholder:text-muted-foreground/50"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleEmailLogin(); }}
                 />
                 <button
                   onClick={handleEmailLogin}
-                  className="w-full flex items-center gap-4 px-5 py-4 rounded-xl bg-primary/8 hover:bg-primary/12 border border-primary/20 hover:border-primary/40 transition-all duration-200 text-left group"
+                  disabled={isLoading}
+                  className="w-full flex items-center gap-4 px-5 py-4 rounded-xl bg-primary/8 hover:bg-primary/12 border border-primary/20 hover:border-primary/40 transition-all duration-200 text-left group disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <svg className="w-5 h-5 shrink-0 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -239,33 +264,12 @@ export default function Login() {
                 </button>
               </div>
             </div>
-          ) : (
-            <div className="py-8 flex flex-col items-center gap-6">
-              <div className="relative w-20 h-20">
-                <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-spin" style={{ borderTopColor: "hsl(43 100% 50%)", animationDuration: "1s" }} />
-                <div className="absolute inset-2 rounded-full border border-purple/30 animate-spin" style={{ borderTopColor: "hsl(262 83% 66%)", animationDuration: "1.5s", animationDirection: "reverse" }} />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <svg className="w-8 h-8 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                </div>
-              </div>
-              <div className="text-center">
-                <p className="font-semibold text-lg mb-1">Setting up your account</p>
-                <p className="text-muted-foreground text-sm transition-all" key={stepLabel}>{stepLabel}</p>
-              </div>
-              <div className="flex gap-1.5">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
-                ))}
-              </div>
-            </div>
           )}
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6 leading-relaxed">
-          By signing in, a Solana wallet is silently created for you.<br />
-          No seed phrases. No crypto knowledge required.
+          By signing in, an invisible Solana wallet is created for you.<br />
+          No seed phrases. No crypto knowledge required. Powered by Web3Auth.
         </p>
       </div>
     </div>

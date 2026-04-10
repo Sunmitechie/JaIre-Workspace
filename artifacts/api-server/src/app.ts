@@ -57,8 +57,41 @@ function makePythonProxy() {
 app.use("/jaire", makePythonProxy());
 app.use("/api/jaire", makePythonProxy());
 
+// Forward /mpc/* and /api/mpc/* to the MPC Sidecar on port 9000 (Web3Auth key mgmt)
+function makeMpcProxy() {
+  return (req: express.Request, res: express.Response) => {
+    const forwardPath = `/mpc${req.url}`;
+    const options: http.RequestOptions = {
+      hostname: "localhost",
+      port: 9000,
+      path: forwardPath,
+      method: req.method,
+      headers: { ...req.headers, host: "localhost:9000" },
+    };
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.pipe(res, { end: true });
+    });
+    proxyReq.on("error", () => {
+      if (!res.headersSent) res.status(502).json({ error: "MPC Sidecar unavailable" });
+    });
+    req.pipe(proxyReq, { end: true });
+  };
+}
+
+app.use("/mpc", makeMpcProxy());
+app.use("/api/mpc", makeMpcProxy());
+
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+// Public config — exposes non-secret client-side keys
+app.get("/api/config", (_req, res) => {
+  res.json({
+    web3authClientId: process.env["WEB3AUTH_CLIENT_ID"] ?? "",
+    web3authNetwork: "sapphire_devnet",
+  });
+});
 
 app.use("/api", router);
 

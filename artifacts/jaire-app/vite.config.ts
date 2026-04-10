@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 const rawPort = process.env.PORT;
 
@@ -28,7 +29,12 @@ if (!basePath) {
 
 export default defineConfig({
   base: basePath,
+  define: {
+    // Inject WEB3AUTH_CLIENT_ID at build time — it's a public client ID, not a secret
+    __WEB3AUTH_CLIENT_ID__: JSON.stringify(process.env["WEB3AUTH_CLIENT_ID"] ?? ""),
+  },
   plugins: [
+    nodePolyfills({ globals: { Buffer: true, global: true, process: true } }),
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),
@@ -73,6 +79,10 @@ export default defineConfig({
       },
       "/jaire": {
         target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/mpc": {
+        target: "http://localhost:9000",
         changeOrigin: true,
       },
     },
