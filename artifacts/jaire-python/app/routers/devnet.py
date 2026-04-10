@@ -40,6 +40,48 @@ class LivePaymentRequest(BaseModel):
     user_name: Optional[str] = None
 
 
+class FundVaultRequest(BaseModel):
+    amount_usdc: float = 500.0
+    mint_pubkey: str
+
+
+@router.get("/jaire/devnet/vault")
+async def get_vault_info(mint: Optional[str] = None):
+    """Show JaIre vault address, SOL balance, and USDC balance."""
+    _require_devnet()
+    try:
+        svc = get_solana_service()
+        info = await svc.get_vault_info(mint_override=mint)
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/jaire/devnet/setup/fund-vault")
+async def fund_vault(body: FundVaultRequest):
+    """
+    Mint test USDC to the JaIre vault so it can disburse to user wallets.
+    The treasury (mint authority) mints tokens directly into the vault's ATA.
+    """
+    _require_devnet()
+    try:
+        svc = get_solana_service()
+        setup = get_devnet_setup()
+        vault_pubkey_str = str(svc.vault_pubkey)
+        sig = await setup.mint_test_usdc(vault_pubkey_str, body.amount_usdc, body.mint_pubkey)
+        info = await svc.get_vault_info(mint_override=body.mint_pubkey)
+        return {
+            "signature": sig,
+            "vault": vault_pubkey_str,
+            "minted_usdc": body.amount_usdc,
+            "vault_usdc_balance": info["usdc_balance"],
+            "mint": body.mint_pubkey,
+            "explorer": f"https://explorer.solana.com/tx/{sig}?cluster=devnet",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/jaire/devnet/treasury")
 async def get_treasury_info():
     _require_devnet()
@@ -181,11 +223,13 @@ async def live_on_chain_payment(
         from app.services import payment_service
 
         # Ensure user + wallet exist
+        import time
+        ts = int(time.time())
         payment = await payment_service.process_payment(
             db=db,
             user_identifier=body.user_identifier,
             amount_ngn=body.amount_ngn,
-            payment_reference=f"LIVE-DEVNET-{body.user_identifier[:8].upper()}",
+            payment_reference=f"LIVE-DEVNET-{ts}",
             provider="test",
             is_test_mode=False,
             user_name=body.user_name,
