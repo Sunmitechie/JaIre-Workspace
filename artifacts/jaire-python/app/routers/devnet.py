@@ -256,6 +256,152 @@ async def live_on_chain_payment(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class FullFlowRequest(BaseModel):
+    email: str = "test.nomad@blockchain-nomads.ng"
+    name: str = "Test Nomad"
+    amount_ngn: float = 25000
+    workspace_id: str = "ws-001"
+    planned_hours: float = 2.0
+    mint_pubkey: str
+
+
+@router.post("/jaire/devnet/full-flow-test")
+async def full_flow_test(
+    body: FullFlowRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Runs the complete JaIre payment lifecycle on devnet with REAL on-chain transactions:
+
+      Step 1  Paystack oracle     — live NGN→USDC rate
+      Step 2  Vault disbursement  — vault SPL transfers USDC to user wallet (REAL TX)
+      Step 3  Escrow lock         — vault Memo TX anchors check-in on-chain (REAL TX)
+      Step 4  Kamino deposit      — vault Memo TX records APY deposit (REAL TX)
+      Step 5  Live ticking        — 5 second real-time status snapshot
+      Step 6  Kamino withdraw     — vault Memo TX records yield earned (REAL TX)
+      Step 7  Settlement          — vault SPL transfers refund to user (REAL TX)
+      Step 8  Host payment log    — vault Memo TX records host split (REAL TX)
+    """
+    _require_devnet()
+    import time
+    from app.services import payment_service, session_service
+    from app.services.oracle_service import convert_to_usdc
+
+    results = {}
+
+    try:
+        # ── Step 1: Oracle ──────────────────────────────────────────────────
+        oracle = await convert_to_usdc(body.amount_ngn, "NGN")
+        results["step1_oracle"] = {
+            "amount_ngn": body.amount_ngn,
+            "amount_usdc": oracle["amount_usdc"],
+            "rate": oracle["rate"],
+            "source": oracle["source"],
+            "status": "✅ Live rate fetched",
+        }
+
+        # ── Step 2: Vault Disbursement (Paystack payment settled) ───────────
+        ts = int(time.time())
+        payment = await payment_service.process_payment(
+            db=db,
+            user_identifier=body.email,
+            amount_ngn=body.amount_ngn,
+            payment_reference=f"FULLFLOW-{ts}",
+            provider="paystack",
+            is_test_mode=False,
+            user_name=body.name,
+            mint_override=body.mint_pubkey,
+        )
+        results["step2_vault_disbursement"] = {
+            "payment_id": str(payment.id),
+            "amount_ngn": float(payment.amount_ngn),
+            "amount_usdc": float(payment.amount_usdc),
+            "exchange_rate": float(payment.exchange_rate),
+            "tx_signature": payment.tx_signature,
+            "explorer": f"https://solscan.io/tx/{payment.tx_signature}?cluster=devnet",
+            "status": "✅ USDC disbursed from vault to user wallet",
+        }
+
+        # ── Step 3-4: Check-In (escrow lock + Kamino deposit on-chain) ──────
+        session = await session_service.check_in(
+            db=db,
+            user_identifier=body.email,
+            workspace_id=body.workspace_id,
+            planned_hours=body.planned_hours,
+            is_test_mode=False,
+            mint_override=body.mint_pubkey,
+        )
+        results["step3_escrow_lock"] = {
+            "session_id": str(session.id),
+            "workspace": session.workspace_name,
+            "amount_usdc_escrowed": float(session.original_amount_usdc),
+            "tx_signature": session.escrow_tx,
+            "explorer": f"https://solscan.io/tx/{session.escrow_tx}?cluster=devnet",
+            "status": "✅ Escrow lock anchored on Solana",
+        }
+        results["step4_kamino_deposit"] = {
+            "session_id": str(session.id),
+            "principal_usdc": float(session.original_amount_usdc),
+            "apy_pct": 5.0,
+            "tx_signature": session.kamino_deposit_tx,
+            "explorer": f"https://solscan.io/tx/{session.kamino_deposit_tx}?cluster=devnet",
+            "status": "✅ Kamino deposit anchored on Solana (5% APY simulation)",
+        }
+
+        # ── Step 5: Live status snapshot (let 5 sec pass) ───────────────────
+        time.sleep(5)
+        live = session_service.get_realtime_status(session)
+        results["step5_live_ticking"] = {
+            "elapsed_seconds": live["elapsed_seconds"],
+            "elapsed_hms": live["elapsed_hms"],
+            "current_cost_usdc": live["current_cost_usdc"],
+            "estimated_yield_usdc": live["estimated_yield_usdc"],
+            "status": "✅ Billing ticking per second",
+        }
+
+        # ── Steps 6-8: Check-Out (Kamino withdraw + settlement on-chain) ────
+        checkout = await session_service.check_out(
+            db=db,
+            session_id=str(session.id),
+            mint_override=body.mint_pubkey,
+        )
+        results["step6_kamino_withdraw"] = {
+            "tx_signature": checkout["transactions"]["kamino_withdraw_tx"]["signature"],
+            "explorer": checkout["transactions"]["kamino_withdraw_tx"].get("explorer", {}).get("solscan"),
+            "principal_usdc": checkout["original_amount_usdc"],
+            "yield_earned_usdc": checkout["kamino_yield_usdc"],
+            "status": "✅ Kamino withdrawal anchored on Solana",
+        }
+        results["step7_user_refund"] = {
+            "tx_signature": checkout["transactions"]["user_refund_tx"]["signature"],
+            "explorer": (checkout["transactions"]["user_refund_tx"].get("explorer") or {}).get("solscan"),
+            "amount_usdc": checkout["user_refund_usdc"],
+            "status": "✅ USDC refund sent to user wallet" if checkout["user_refund_usdc"] > 0 else "No refund (fully consumed)",
+        }
+        results["step8_host_payment"] = {
+            "tx_signature": checkout["transactions"]["host_payment_tx"]["signature"],
+            "explorer": checkout["transactions"]["host_payment_tx"].get("explorer", {}).get("solscan"),
+            "host_usdc": checkout["host_payment_usdc"],
+            "treasury_usdc": checkout["treasury_payment_usdc"],
+            "status": "✅ Host payment anchored on Solana",
+        }
+        results["settlement_breakdown"] = checkout["settlement_breakdown"]
+        results["summary"] = {
+            "total_on_chain_txs": 5,
+            "real_spl_transfers": 2,
+            "memo_anchors": 3,
+            "network": "Solana devnet",
+            "vault": str(get_solana_service().vault_pubkey),
+        }
+
+    except Exception as e:
+        logger.error(f"[FULL FLOW TEST] Failed at step: {e}", exc_info=True)
+        results["error"] = str(e)
+        raise HTTPException(status_code=500, detail={"partial_results": results, "error": str(e)})
+
+    return results
+
+
 @router.get("/jaire/devnet/balance-for-mint/{pubkey}/{mint}")
 async def get_balance_for_mint(pubkey: str, mint: str):
     """Get SOL + token balance for a specific mint (useful for test mints)."""
