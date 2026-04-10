@@ -22,10 +22,15 @@ async def lifespan(app: FastAPI):
     logger.info("Starting JaIre Python API...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Safe column migrations for jaire_wallets (v2 MPC fields)
+        # Safe column migrations — add new columns if they don't exist
         for col_sql in [
+            # v2 MPC fields
             "ALTER TABLE jaire_wallets ADD COLUMN IF NOT EXISTS verifier_id VARCHAR(255)",
             "ALTER TABLE jaire_wallets ADD COLUMN IF NOT EXISTS wallet_type VARCHAR(20) DEFAULT 'mpc'",
+            # v3 payment oracle fields
+            "ALTER TABLE jaire_payments ADD COLUMN IF NOT EXISTS amount_fiat NUMERIC(18,2)",
+            "ALTER TABLE jaire_payments ADD COLUMN IF NOT EXISTS fiat_currency VARCHAR(10) DEFAULT 'NGN'",
+            "ALTER TABLE jaire_payments ADD COLUMN IF NOT EXISTS oracle_source VARCHAR(50)",
         ]:
             try:
                 await conn.execute(text(col_sql))

@@ -42,19 +42,77 @@ class JairePayment(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("jaire_users.id"), nullable=True, index=True)
-    amount_ngn = Column(Numeric(18, 2), nullable=False)
+    amount_ngn = Column(Numeric(18, 2), nullable=False)   # kept for backward compat
+    amount_fiat = Column(Numeric(18, 2), nullable=True)   # original fiat (any currency)
+    fiat_currency = Column(String(10), nullable=True, default="NGN")
     amount_usdc = Column(Numeric(18, 6), nullable=False)
     exchange_rate = Column(Numeric(18, 6), nullable=True)
+    oracle_source = Column(String(50), nullable=True)     # which oracle provided the rate
     tx_signature = Column(String(128), nullable=True)
     status = Column(String(20), default="pending", index=True)
     payment_reference = Column(String(255), unique=True, nullable=True)
     is_test_mode = Column(Boolean, default=False)
-    provider = Column(String(20), default="paystack")
+    provider = Column(String(20), default="paystack")     # paystack | stripe | test
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("JaireUser", back_populates="payments")
+
+
+class HubVault(Base):
+    """
+    Tracks a Hub Owner's USDC balance within JaIre.
+    85% of every completed session flows here.
+    Withdrawals: JaIre pays fiat from its liquidity buffer, then sweeps
+    the USDC back to the central vault to replenish.
+    """
+    __tablename__ = "hub_vaults"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    hub_id = Column(String(100), nullable=False, unique=True, index=True)
+    hub_name = Column(String(255), nullable=True)
+    owner_name = Column(String(255), nullable=True)
+    owner_email = Column(String(255), nullable=True)
+
+    balance_usdc = Column(Numeric(18, 6), nullable=False, default=0)
+    total_earned_usdc = Column(Numeric(18, 6), nullable=False, default=0)
+    total_withdrawn_usdc = Column(Numeric(18, 6), nullable=False, default=0)
+
+    payout_provider = Column(String(20), nullable=True)       # paystack | stripe
+    payout_destination = Column(String(255), nullable=True)   # recipient_code or account:bankcode
+    payout_currency = Column(String(10), nullable=True, default="NGN")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    withdrawals = relationship("HubWithdrawal", back_populates="vault", lazy="select")
+
+
+class HubWithdrawal(Base):
+    """Audit log of every Hub Owner withdrawal and the USDC sweep."""
+    __tablename__ = "hub_withdrawals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vault_id = Column(UUID(as_uuid=True), ForeignKey("hub_vaults.id"), nullable=False, index=True)
+
+    amount_usdc = Column(Numeric(18, 6), nullable=False)
+    fiat_amount = Column(Numeric(18, 2), nullable=False)
+    fiat_currency = Column(String(10), nullable=False, default="NGN")
+    oracle_rate = Column(Numeric(18, 6), nullable=True)
+    oracle_source = Column(String(50), nullable=True)
+
+    payout_provider = Column(String(20), nullable=False)
+    payout_reference = Column(String(255), nullable=True)
+    payout_status = Column(String(20), default="initiated")   # initiated | success | failed
+
+    sweep_tx = Column(String(128), nullable=True)
+    sweep_status = Column(String(20), default="pending")      # pending | completed | failed
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    vault = relationship("HubVault", back_populates="withdrawals")
 
 
 class JaireSession(Base):

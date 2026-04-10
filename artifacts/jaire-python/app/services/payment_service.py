@@ -13,6 +13,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.models import JaireUser, JaireWallet, JairePayment
 from app.services.solana_service import get_solana_service
+from app.services.oracle_service import convert_to_usdc
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ SOLANAFM_BASE = "https://solana.fm"
 
 
 def _ngn_to_usdc(amount_ngn: float) -> float:
+    """Legacy fixed-rate conversion — used as last resort fallback."""
     return round(amount_ngn / settings.ngn_usdc_rate, 6)
 
 
@@ -148,6 +150,8 @@ async def process_payment(
     is_test_mode: bool = False,
     user_name: Optional[str] = None,
     mint_override: Optional[str] = None,
+    fiat_currency: str = "NGN",
+    amount_fiat: Optional[float] = None,
 ) -> JairePayment:
     existing_stmt = select(JairePayment).where(
         JairePayment.payment_reference == payment_reference
@@ -156,16 +160,29 @@ async def process_payment(
     if existing.scalar_one_or_none():
         raise ValueError(f"Duplicate payment reference: {payment_reference}")
 
-    amount_usdc = _ngn_to_usdc(amount_ngn)
+    # Use live oracle for accurate conversion regardless of currency
+    oracle_result = await convert_to_usdc(
+        amount=amount_fiat if amount_fiat is not None else amount_ngn,
+        currency=fiat_currency,
+    )
+    amount_usdc = oracle_result["amount_usdc"]
+    exchange_rate = oracle_result["rate"]
+    oracle_source = oracle_result["source"]
+
+    # Normalize NGN for backward compat (if a non-NGN currency, store the raw fiat as amount_ngn too)
+    ngn_equivalent = amount_ngn  # whatever caller provided
 
     user = await _get_or_create_user(db, user_identifier, name=user_name)
     wallet = await _get_or_create_wallet(db, user)
 
     payment = JairePayment(
         user_id=user.id,
-        amount_ngn=Decimal(str(amount_ngn)),
+        amount_ngn=Decimal(str(ngn_equivalent)),
+        amount_fiat=Decimal(str(amount_fiat if amount_fiat is not None else amount_ngn)),
+        fiat_currency=fiat_currency,
         amount_usdc=Decimal(str(amount_usdc)),
-        exchange_rate=Decimal(str(settings.ngn_usdc_rate)),
+        exchange_rate=Decimal(str(exchange_rate)),
+        oracle_source=oracle_source,
         payment_reference=payment_reference,
         status="processing",
         is_test_mode=is_test_mode,
@@ -173,6 +190,12 @@ async def process_payment(
     )
     db.add(payment)
     await db.flush()
+
+    logger.info(
+        f"Payment {payment.id}: {amount_fiat or amount_ngn} {fiat_currency} "
+        f"→ {amount_usdc} USDC @ {exchange_rate} {fiat_currency}/USDC "
+        f"[oracle: {oracle_source}]"
+    )
 
     if is_test_mode:
         # In test mode: generate a realistic-looking simulated signature
