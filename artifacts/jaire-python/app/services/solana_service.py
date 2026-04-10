@@ -27,6 +27,7 @@ TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 SYSVAR_RENT_PUBKEY = Pubkey.from_string("SysvarRent111111111111111111111111111111111")
 USDC_DECIMALS = 6
+MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 
 
 def get_ata_address(owner: Pubkey, mint: Pubkey) -> Pubkey:
@@ -276,6 +277,43 @@ class SolanaService:
 
         # Fire-and-forget confirmation in background
         asyncio.create_task(self._confirm_transaction(signature))
+        return signature
+
+    # ── Memo Transactions ─────────────────────────────────────────────────
+
+    async def send_memo_from_vault(self, memo_text: str, wait_for_confirm: bool = False) -> str:
+        """
+        Write an on-chain memo signed by the JaIre vault.
+        Used to anchor escrow events, Kamino deposits, and settlement records
+        immutably on the Solana blockchain.
+
+        The Memo Program stores the UTF-8 text on-chain — visible in any
+        Solana explorer by looking at the transaction's instruction data.
+        """
+        from solders.instruction import Instruction
+
+        memo_ix = Instruction(
+            MEMO_PROGRAM_ID,
+            memo_text.encode("utf-8"),
+            [],
+        )
+
+        blockhash_resp = await self.client.get_latest_blockhash(commitment=Confirmed)
+        recent_blockhash = blockhash_resp.value.blockhash
+        msg = Message.new_with_blockhash([memo_ix], self.vault_pubkey, recent_blockhash)
+        tx = Transaction([self.vault_keypair], msg, recent_blockhash)
+
+        resp = await self.client.send_transaction(
+            tx, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+        )
+        signature = str(resp.value)
+        logger.info(f"[VAULT MEMO] {memo_text[:60]}… | tx: {signature[:20]}…")
+
+        if wait_for_confirm:
+            await self._confirm_transaction(signature)
+        else:
+            asyncio.create_task(self._confirm_transaction(signature))
+
         return signature
 
     # ── Legacy: Treasury Transfer (kept for devnet setup only) ────────────
