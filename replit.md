@@ -12,7 +12,7 @@ Web2.5 coworking workspace booking platform for "Blockchain Nomads." Users pay i
 
 | Service | Port | Language | Purpose |
 |---------|------|----------|---------|
-| Express API Proxy | 8080 | TypeScript | Routes all traffic; forwards `/jaire/*` → Python, `/mpc/*` → MPC Sidecar |
+| Express API Proxy | 8080 | TypeScript | Routes all traffic; forwards `/jaire/*` → Python, `/mpc/*` → MPC Sidecar; `/api/config` endpoint |
 | JaIre Python API | 8000 | Python 3.11 | Core: wallets, payments, Solana, DB |
 | MPC Sidecar | 9000 | TypeScript | Web3Auth JWT verify + key-factor share derivation |
 | Anchor Program | — | Rust | Escrow smart contract (85/15 split) |
