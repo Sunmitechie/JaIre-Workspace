@@ -8,6 +8,15 @@ const NETWORK = "sapphire_devnet";
 let _instance: Web3Auth | null = null;
 let _initPromise: Promise<void> | null = null;
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms),
+    ),
+  ]);
+}
+
 function createWeb3AuthInstance(): Web3Auth {
   return new Web3Auth({
     clientId: __WEB3AUTH_CLIENT_ID__,
@@ -31,8 +40,7 @@ export function getInstance(): Web3Auth {
 export async function initWeb3Auth(): Promise<Web3Auth> {
   const w = getInstance();
   if (!_initPromise) {
-    _initPromise = w.init().catch((err) => {
-      // Reset so init can be retried
+    _initPromise = withTimeout(w.init(), 20_000, "Web3Auth init").catch((err) => {
       _initPromise = null;
       throw err;
     });
@@ -54,14 +62,18 @@ export interface Web3AuthUser {
 /**
  * Trigger social OAuth login (Google / Twitter / Apple).
  * Opens a popup for OAuth; resolves after authentication.
+ * Times out after 3 minutes so the loading screen never hangs forever.
  */
 export async function loginWithSocial(provider: SocialProvider): Promise<Web3AuthUser> {
   const w = await initWeb3Auth();
-  // If already connected from a previous session, log out first
   if ((w as any).status === "connected") {
     try { await w.logout(); } catch {}
   }
-  await (w as any).connectTo("auth", { authConnection: provider });
+  await withTimeout(
+    (w as any).connectTo("auth", { authConnection: provider }),
+    180_000,
+    "Social login",
+  );
   return extractUserInfo(w);
 }
 
@@ -74,10 +86,14 @@ export async function loginWithEmail(email: string): Promise<Web3AuthUser> {
   if ((w as any).status === "connected") {
     try { await w.logout(); } catch {}
   }
-  await (w as any).connectTo("auth", {
-    authConnection: "email_passwordless",
-    extraLoginOptions: { login_hint: email },
-  });
+  await withTimeout(
+    (w as any).connectTo("auth", {
+      authConnection: "email_passwordless",
+      extraLoginOptions: { login_hint: email },
+    }),
+    300_000,
+    "Email login",
+  );
   return extractUserInfo(w);
 }
 

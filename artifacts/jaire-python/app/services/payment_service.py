@@ -165,9 +165,20 @@ async def process_payment(
         amount=amount_fiat if amount_fiat is not None else amount_ngn,
         currency=fiat_currency,
     )
-    amount_usdc = oracle_result["amount_usdc"]
+    raw_usdc = oracle_result["amount_usdc"]
     exchange_rate = oracle_result["rate"]
     oracle_source = oracle_result["source"]
+
+    # Apply 0.5% FX spread — JaIre earns this on every NGN→USDC exchange
+    FX_SPREAD = Decimal("0.005")
+    amount_usdc_decimal = Decimal(str(raw_usdc))
+    spread_usdc = (amount_usdc_decimal * FX_SPREAD).quantize(Decimal("0.000001"))
+    amount_usdc = float((amount_usdc_decimal - spread_usdc).quantize(Decimal("0.000001")))
+
+    logger.info(
+        f"FX spread: raw={raw_usdc} USDC → spread={spread_usdc} USDC → "
+        f"user_gets={amount_usdc} USDC (JaIre earns {spread_usdc} USDC / 0.5%)"
+    )
 
     # Normalize NGN for backward compat (if a non-NGN currency, store the raw fiat as amount_ngn too)
     ngn_equivalent = amount_ngn  # whatever caller provided
