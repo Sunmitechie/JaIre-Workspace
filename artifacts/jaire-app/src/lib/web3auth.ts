@@ -103,11 +103,15 @@ export async function logoutWeb3Auth(): Promise<void> {
 }
 
 async function extractUserInfo(w: Web3AuthNoModal): Promise<Web3AuthUser> {
+  // In Web3Auth v10, `idToken` is a getter on the instance, NOT in getUserInfo().
+  // getUserInfo() returns the social profile (name, email, picture).
+  const idToken = w.idToken ?? "";
   const info = await w.getUserInfo();
   return {
-    idToken: (info as any).idToken ?? "",
+    idToken,
     email: (info as any).email ?? "",
     name: (info as any).name ?? "",
-    profileImage: (info as any).profileImage ?? "",
+    // Web3Auth v10 uses profileImage or profilePicture depending on provider
+    profileImage: (info as any).profileImage ?? (info as any).profilePicture ?? "",
   };
 }

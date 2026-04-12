@@ -20,6 +20,7 @@ import "./index.css";
 const SUPPRESSED_MESSAGES = [
   "process2.nextTick is not a function",
   "Cannot read properties of undefined (reading 'isConnected')",
+  "Cannot read properties of undefined (reading 'NODE_DEBUG')",
   "Failed to connect with wallet. Wallet connector is not ready yet",
   "WalletLoginError",
 ];
