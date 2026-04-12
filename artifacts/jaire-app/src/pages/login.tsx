@@ -7,6 +7,8 @@ import {
   getConnectedUser,
   loginWithSocial,
   loginWithEmail,
+  hasOAuthRedirectResult,
+  handleOAuthRedirect,
   type SocialProvider,
 } from "@/lib/web3auth";
 
@@ -54,8 +56,10 @@ export default function Login() {
   const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // On mount: init Web3Auth and check if we're returning from an OAuth redirect.
-  // In redirect mode, init() restores the session automatically.
+  // On mount: init Web3Auth, then check whether we are:
+  //   (a) returning from an OAuth redirect  → call handleOAuthRedirect()
+  //   (b) already have a live session       → proceed directly
+  //   (c) fresh visit                       → show login buttons
   useEffect(() => {
     let cancelled = false;
 
@@ -64,11 +68,20 @@ export default function Login() {
         await initWeb3Auth();
         if (cancelled) return;
 
-        const user = await getConnectedUser();
+        let user = null;
+
+        if (hasOAuthRedirectResult()) {
+          // We're back from the OAuth provider — process the token
+          setStatusMsg("Completing sign-in…");
+          user = await handleOAuthRedirect();
+        } else {
+          // Check for an existing cached session
+          user = await getConnectedUser();
+        }
+
         if (cancelled) return;
 
         if (user) {
-          // Returning from OAuth redirect — session already exists
           await finishLogin(user.idToken, user.email, user.name, user.profileImage ?? "");
         } else {
           setStep("choose");
