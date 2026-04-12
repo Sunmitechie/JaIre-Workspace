@@ -98,7 +98,7 @@ export default function Login() {
 
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const timeout = setTimeout(() => controller.abort(), 12_000);
       const res = await fetch(`${BASE_URL}/api/mpc/wallet`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -114,19 +114,19 @@ export default function Login() {
         resolvedName = data.name || name;
       }
     } catch {
-      // wallet derivation failed — non-fatal
+      // wallet derivation failed — non-fatal, user still gets in
     }
 
-    setStatusMsg("Linking your JaIre account...");
-    await delay(400);
     setStatusMsg("Almost ready!");
-    await delay(300);
+    await delay(400);
 
+    // Save user to localStorage — must happen before navigation so ProtectedRoute passes
+    const userId = `w3a_${verifierId?.replace(/[^a-z0-9]/gi, "_") ?? Date.now()}`;
     saveUser({
-      id: `w3a_${verifierId?.replace(/[^a-z0-9]/gi, "_") ?? Date.now()}`,
+      id: userId,
       name: resolvedName || resolvedEmail.split("@")[0] || "JaIre User",
       email: resolvedEmail,
-      avatar: profileImage || `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(resolvedEmail)}`,
+      avatar: profileImage || `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(resolvedEmail || userId)}`,
       provider: "google",
       walletAddress,
       walletNetwork: "devnet",
@@ -135,7 +135,21 @@ export default function Login() {
     });
 
     setStep("done");
-    setLocation("/baire");
+
+    // Navigate to /baire. Use wouter first; fall back to hard navigation if the
+    // URL still has OAuth params that may confuse the router.
+    try {
+      setLocation("/baire");
+      // Give wouter one tick to update; if we're still on /login, force it.
+      await delay(200);
+      if (window.location.pathname.includes("/login")) {
+        const base = BASE_URL.replace(/\/$/, "");
+        window.location.replace(`${base}/baire`);
+      }
+    } catch {
+      const base = BASE_URL.replace(/\/$/, "");
+      window.location.replace(`${base}/baire`);
+    }
   };
 
   const handleSocial = async (provider: SocialProvider) => {
