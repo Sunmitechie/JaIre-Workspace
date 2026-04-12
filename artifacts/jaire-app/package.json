@@ -75,7 +75,9 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "@web3auth/no-modal": "10.15.0",
+    "@toruslabs/tss-dkls-lib": "^4.1.0",
+    "@toruslabs/tss-frost-lib": "^1.0.0",
+    "@web3auth/mpc-core-kit": "3.5.0",
     "viem": "^2.47.11",
     "vite-plugin-node-polyfills": "^0.26.0"
   }

@@ -1,11 +1,9 @@
 import {
-  Web3AuthNoModal,
-  authConnector,
-  UX_MODE,
-  AUTH_CONNECTION,
+  Web3AuthMPCCoreKit,
   WEB3AUTH_NETWORK,
-  WALLET_CONNECTORS,
-} from "@web3auth/no-modal";
+  COREKIT_STATUS,
+} from "@web3auth/mpc-core-kit";
+import { tssLib } from "@toruslabs/tss-dkls-lib";
 
 declare const __WEB3AUTH_CLIENT_ID__: string;
 
@@ -14,31 +12,33 @@ export interface Web3AuthUser {
   email: string;
   name: string;
   profileImage?: string;
+  verifierId?: string;
 }
 
 export type SocialProvider = "google" | "twitter" | "apple";
 
-let _instance: Web3AuthNoModal | null = null;
-let _initPromise: Promise<Web3AuthNoModal> | null = null;
+let _instance: Web3AuthMPCCoreKit | null = null;
+let _initPromise: Promise<Web3AuthMPCCoreKit> | null = null;
 
-function buildInstance(): Web3AuthNoModal {
-  return new Web3AuthNoModal({
-    clientId: __WEB3AUTH_CLIENT_ID__,
-    web3AuthNetwork: WEB3AUTH_NETWORK.SAPPHIRE_DEVNET,
-    connectors: [
-      authConnector({
-        uxMode: UX_MODE.REDIRECT,
-      }),
-    ],
+const BASE_URL_PATH = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
+
+function buildInstance(): Web3AuthMPCCoreKit {
+  return new Web3AuthMPCCoreKit({
+    web3AuthClientId: __WEB3AUTH_CLIENT_ID__,
+    web3AuthNetwork: WEB3AUTH_NETWORK.DEVNET,
+    tssLib,
+    storage: window.localStorage,
+    uxMode: "redirect",
+    baseUrl: `${window.location.origin}${BASE_URL_PATH}`,
+    redirectPathName: "login",
   });
 }
 
 /**
- * Initialize (or return cached) Web3Auth instance.
- * In REDIRECT mode, calling init() after an OAuth redirect automatically
- * restores the session — no popup, no cross-frame postMessage issues.
+ * Initialize (or return cached) Web3AuthMPCCoreKit instance.
+ * Safe to call multiple times — returns the same promise.
  */
-export function initWeb3Auth(): Promise<Web3AuthNoModal> {
+export function initWeb3Auth(): Promise<Web3AuthMPCCoreKit> {
   if (_initPromise) return _initPromise;
 
   _instance = buildInstance();
@@ -54,64 +54,109 @@ export function initWeb3Auth(): Promise<Web3AuthNoModal> {
   return _initPromise;
 }
 
-/** True if the current session is already authenticated (returned from OAuth redirect). */
+/**
+ * Returns true when the current URL contains OAuth callback params
+ * injected by customauth after a social login redirect.
+ */
+export function hasOAuthRedirectResult(): boolean {
+  const hash = window.location.hash;
+  const search = window.location.search;
+  return (
+    hash.includes("state") ||
+    hash.includes("b64Params") ||
+    search.includes("state=") ||
+    search.includes("code=")
+  );
+}
+
+/**
+ * Process the OAuth redirect result.
+ * Call this when `hasOAuthRedirectResult()` is true on the login page.
+ * Returns the authenticated user on success, null if processing failed.
+ */
+export async function handleOAuthRedirect(): Promise<Web3AuthUser | null> {
+  const kit = await initWeb3Auth();
+  if (kit.status !== COREKIT_STATUS.LOGGED_IN) {
+    await kit.handleRedirectResult();
+  }
+  if (kit.status === COREKIT_STATUS.LOGGED_IN) {
+    return extractUserInfo(kit);
+  }
+  return null;
+}
+
+/**
+ * Return the current authenticated user if a valid session exists.
+ * Returns null if the user is not logged in.
+ */
 export async function getConnectedUser(): Promise<Web3AuthUser | null> {
   try {
-    const w = await initWeb3Auth();
-    if (!w.connected) return null;
-    return extractUserInfo(w);
+    const kit = await initWeb3Auth();
+    if (kit.status !== COREKIT_STATUS.LOGGED_IN) return null;
+    return extractUserInfo(kit);
   } catch {
     return null;
   }
 }
 
 /**
- * Start social OAuth — redirects the browser to the provider.
- * This function does NOT return; the page navigates away.
- * On return, `getConnectedUser()` will resolve the authenticated user.
+ * Demo verifiers for sapphire_devnet.
+ * Google: Web3Auth's own demo verifier — works without dashboard config.
+ * Twitter / Apple: will be added once project verifiers are configured.
+ */
+const DEMO_VERIFIERS = {
+  google: {
+    typeOfLogin: "google" as const,
+    verifier: "w3a-google-demo",
+    clientId:
+      "519228911939-cri01h55lsjbsia1k7ll6qpalrus75ps.apps.googleusercontent.com",
+  },
+};
+
+/**
+ * Start social login — redirects the browser to the OAuth provider.
+ * This function does NOT return normally; the page navigates away.
+ * On return, the login page calls `handleOAuthRedirect()`.
  */
 export async function loginWithSocial(provider: SocialProvider): Promise<void> {
-  const w = await initWeb3Auth();
-  const connectionMap: Record<SocialProvider, string> = {
-    google: AUTH_CONNECTION.GOOGLE,
-    twitter: AUTH_CONNECTION.TWITTER,
-    apple: AUTH_CONNECTION.APPLE,
-  };
-  await w.connectTo(WALLET_CONNECTORS.AUTH, {
-    authConnection: connectionMap[provider],
-  });
+  if (provider !== "google") {
+    throw new Error(
+      `${provider === "twitter" ? "X (Twitter)" : "Apple"} sign-in is coming soon — please use Google for now.`
+    );
+  }
+  const kit = await initWeb3Auth();
+  await kit.loginWithOAuth({ subVerifierDetails: DEMO_VERIFIERS.google });
 }
 
 /**
- * Start email passwordless OAuth — redirects the browser.
- * This function does NOT return; the page navigates away.
+ * Email passwordless — coming soon (needs a dedicated verifier in dashboard).
  */
-export async function loginWithEmail(email: string): Promise<void> {
-  const w = await initWeb3Auth();
-  await w.connectTo(WALLET_CONNECTORS.AUTH, {
-    authConnection: AUTH_CONNECTION.EMAIL_PASSWORDLESS,
-    authConnectionParams: { login_hint: email },
-  });
+export async function loginWithEmail(_email: string): Promise<void> {
+  throw new Error(
+    "Email sign-in is coming soon — please use Google for now."
+  );
 }
 
 export async function logoutWeb3Auth(): Promise<void> {
   if (_instance) {
-    try { await _instance.logout(); } catch {}
+    try {
+      await _instance.logout();
+    } catch {
+      // logout errors are non-fatal
+    }
     _instance = null;
     _initPromise = null;
   }
 }
 
-async function extractUserInfo(w: Web3AuthNoModal): Promise<Web3AuthUser> {
-  // In Web3Auth v10, `idToken` is a getter on the instance, NOT in getUserInfo().
-  // getUserInfo() returns the social profile (name, email, picture).
-  const idToken = w.idToken ?? "";
-  const info = await w.getUserInfo();
+function extractUserInfo(kit: Web3AuthMPCCoreKit): Web3AuthUser {
+  const info = kit.getUserInfo() as Record<string, unknown>;
   return {
-    idToken,
-    email: (info as any).email ?? "",
-    name: (info as any).name ?? "",
-    // Web3Auth v10 uses profileImage or profilePicture depending on provider
-    profileImage: (info as any).profileImage ?? (info as any).profilePicture ?? "",
+    idToken: (info.idToken as string) ?? "",
+    email: (info.email as string) ?? "",
+    name: (info.name as string) ?? "",
+    profileImage:
+      (info.profileImage as string) ?? (info.profilePicture as string) ?? "",
+    verifierId: (info.verifierId as string) ?? (info.sub as string) ?? "",
   };
 }

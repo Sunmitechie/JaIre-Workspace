@@ -62,6 +62,10 @@ export default defineConfig({
       : []),
   ],
   optimizeDeps: {
+    // Force Vite to pre-bundle the TSS packages so esbuild can transform
+    // their webpack-bundled CJS exports to proper ESM named exports.
+    // (Without this, Vite serves raw CJS which browsers can't handle.)
+    include: ["@toruslabs/tss-dkls-lib", "@toruslabs/tss-frost-lib"],
     esbuildOptions: {
       // Inject a process shim at the TOP of every pre-bundled CJS chunk so that
       // modules like `util@0.12.5` (which read process.env at module init time)
