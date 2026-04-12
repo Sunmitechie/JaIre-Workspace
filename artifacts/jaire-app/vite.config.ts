@@ -29,8 +29,11 @@ if (!basePath) {
 export default defineConfig({
   base: basePath,
   define: {
-    // Inject WEB3AUTH_CLIENT_ID at build time — it's a public client ID, not a secret
+    // Inject Web3Auth + Google OAuth credentials at build time.
+    // Set GOOGLE_CLIENT_ID and WEB3AUTH_GOOGLE_VERIFIER in env secrets.
     __WEB3AUTH_CLIENT_ID__: JSON.stringify(process.env["WEB3AUTH_CLIENT_ID"] ?? ""),
+    __GOOGLE_CLIENT_ID__: JSON.stringify(process.env["GOOGLE_CLIENT_ID"] ?? ""),
+    __WEB3AUTH_GOOGLE_VERIFIER__: JSON.stringify(process.env["WEB3AUTH_GOOGLE_VERIFIER"] ?? ""),
     // Inline process.nextTick so esbuild never has a chance to rename it to
     // process2.nextTick (which is undefined in the browser-polyfilled process object).
     // This define runs before esbuild renames the `process` global, so every

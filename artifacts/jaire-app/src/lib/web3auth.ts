@@ -6,6 +6,8 @@ import {
 import { tssLib } from "@toruslabs/tss-dkls-lib";
 
 declare const __WEB3AUTH_CLIENT_ID__: string;
+declare const __GOOGLE_CLIENT_ID__: string;
+declare const __WEB3AUTH_GOOGLE_VERIFIER__: string;
 
 export interface Web3AuthUser {
   idToken: string;
@@ -100,17 +102,14 @@ export async function getConnectedUser(): Promise<Web3AuthUser | null> {
 }
 
 /**
- * Demo verifiers for sapphire_devnet.
- * Google: Web3Auth's own demo verifier — works without dashboard config.
- * Twitter / Apple: will be added once project verifiers are configured.
+ * Verifier config for sapphire_devnet.
+ * Reads from environment variables injected at build time by Vite.
+ * Set GOOGLE_CLIENT_ID and WEB3AUTH_GOOGLE_VERIFIER in the env secrets.
  */
-const DEMO_VERIFIERS = {
-  google: {
-    typeOfLogin: "google" as const,
-    verifier: "w3a-google-demo",
-    clientId:
-      "519228911939-cri01h55lsjbsia1k7ll6qpalrus75ps.apps.googleusercontent.com",
-  },
+const GOOGLE_VERIFIER = {
+  typeOfLogin: "google" as const,
+  verifier: __WEB3AUTH_GOOGLE_VERIFIER__,
+  clientId: __GOOGLE_CLIENT_ID__,
 };
 
 /**
@@ -125,7 +124,7 @@ export async function loginWithSocial(provider: SocialProvider): Promise<void> {
     );
   }
   const kit = await initWeb3Auth();
-  await kit.loginWithOAuth({ subVerifierDetails: DEMO_VERIFIERS.google });
+  await kit.loginWithOAuth({ subVerifierDetails: GOOGLE_VERIFIER });
 }
 
 /**
