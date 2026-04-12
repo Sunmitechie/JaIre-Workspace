@@ -2,7 +2,13 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { saveUser } from "@/lib/auth";
 import { Particles } from "@/components/particles";
-import { loginWithSocial, loginWithEmail, preloadWeb3Auth, type SocialProvider } from "@/lib/web3auth";
+import {
+  initWeb3Auth,
+  getConnectedUser,
+  loginWithSocial,
+  loginWithEmail,
+  type SocialProvider,
+} from "@/lib/web3auth";
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 
@@ -39,29 +45,52 @@ const SOCIAL_PROVIDERS: { id: SocialProvider; label: string; icon: React.ReactNo
   },
 ];
 
-type Step = "choose" | "popup" | "wallet" | "done";
+type Step = "checking" | "choose" | "redirecting" | "wallet" | "done";
 
 export default function Login() {
   const [, setLocation] = useLocation();
-  const [step, setStep] = useState<Step>("choose");
+  const [step, setStep] = useState<Step>("checking");
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
-  const [statusMsg, setStatusMsg] = useState("Verifying identity...");
+  const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Pre-warm Web3Auth so the SDK is fully ready before the user clicks
-  useEffect(() => { preloadWeb3Auth(); }, []);
+  // On mount: init Web3Auth and check if we're returning from an OAuth redirect.
+  // In redirect mode, init() restores the session automatically.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await initWeb3Auth();
+        if (cancelled) return;
+
+        const user = await getConnectedUser();
+        if (cancelled) return;
+
+        if (user) {
+          // Returning from OAuth redirect — session already exists
+          await finishLogin(user.idToken, user.email, user.name, user.profileImage ?? "");
+        } else {
+          setStep("choose");
+        }
+      } catch {
+        if (!cancelled) setStep("choose");
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
 
   const finishLogin = async (
     idToken: string,
     email: string,
     name: string,
     profileImage: string,
-    provider: string,
   ) => {
     setStep("wallet");
     setStatusMsg("Setting up your account...");
 
-    // Derive MPC wallet — non-fatal; we still let the user in on failure
+    // Derive MPC wallet — non-fatal; user still gets in on failure
     let walletAddress: string | undefined;
     let verifierId: string | undefined;
     let resolvedEmail = email;
@@ -77,7 +106,6 @@ export default function Login() {
         signal: controller.signal,
       });
       clearTimeout(timeout);
-
       if (res.ok) {
         const data = await res.json();
         walletAddress = data.wallet_address;
@@ -86,7 +114,7 @@ export default function Login() {
         resolvedName = data.name || name;
       }
     } catch {
-      // wallet derivation failed — non-fatal, user still gets in
+      // wallet derivation failed — non-fatal
     }
 
     setStatusMsg("Linking your JaIre account...");
@@ -99,7 +127,7 @@ export default function Login() {
       name: resolvedName || resolvedEmail.split("@")[0] || "JaIre User",
       email: resolvedEmail,
       avatar: profileImage || `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(resolvedEmail)}`,
-      provider: provider as any,
+      provider: "google",
       walletAddress,
       walletNetwork: "devnet",
       walletCreatedAt: new Date().toISOString(),
@@ -113,21 +141,14 @@ export default function Login() {
   const handleSocial = async (provider: SocialProvider) => {
     if (step !== "choose") return;
     setActiveProvider(provider);
-    setStep("popup");
-    setStatusMsg("Opening sign-in window...");
+    setStep("redirecting");
+    setStatusMsg(`Connecting to ${provider}…`);
     setError(null);
-
     try {
-      const { idToken, email, name, profileImage } = await loginWithSocial(provider);
-      await finishLogin(idToken, email, name, profileImage ?? "", provider);
+      // Triggers a full-page redirect — page navigates away here
+      await loginWithSocial(provider);
     } catch (err: any) {
-      console.error("Web3Auth login error:", err);
-      const msg = err?.message ?? "";
-      if (msg.toLowerCase().includes("user closed") || msg.toLowerCase().includes("popup closed")) {
-        setError("Sign-in was cancelled. Please try again.");
-      } else {
-        setError(msg || "Sign-in failed. Please try again.");
-      }
+      setError(err?.message || "Sign-in failed. Please try again.");
       setStep("choose");
       setActiveProvider(null);
     }
@@ -142,27 +163,19 @@ export default function Login() {
     }
     if (step !== "choose") return;
     setActiveProvider("email");
-    setStep("popup");
-    setStatusMsg("Sending magic link to your email...");
+    setStep("redirecting");
+    setStatusMsg("Sending you to sign in…");
     setError(null);
-
     try {
-      const { idToken, email: w3aEmail, name, profileImage } = await loginWithEmail(email);
-      await finishLogin(idToken, w3aEmail || email, name, profileImage ?? "", "email");
+      await loginWithEmail(email);
     } catch (err: any) {
-      console.error("Web3Auth email login error:", err);
-      const msg = err?.message ?? "";
-      if (msg.toLowerCase().includes("user closed") || msg.toLowerCase().includes("popup closed")) {
-        setError("Sign-in was cancelled. Please try again.");
-      } else {
-        setError(msg || "Email sign-in failed. Please try again.");
-      }
+      setError(err?.message || "Email sign-in failed. Please try again.");
       setStep("choose");
       setActiveProvider(null);
     }
   };
 
-  const isLoading = step !== "choose" && step !== "done";
+  const isLoading = step !== "choose";
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
@@ -188,7 +201,7 @@ export default function Login() {
         </div>
 
         <div className="glass-card rounded-2xl p-8 border-gradient">
-          {step === "popup" || step === "wallet" ? (
+          {step === "checking" || step === "redirecting" || step === "wallet" || step === "done" ? (
             <div className="py-8 flex flex-col items-center gap-6">
               <div className="relative w-20 h-20">
                 <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-spin" style={{ borderTopColor: "hsl(43 100% 50%)", animationDuration: "1s" }} />
@@ -201,12 +214,16 @@ export default function Login() {
               </div>
               <div className="text-center">
                 <p className="font-semibold text-lg mb-1">
-                  {step === "popup" ? "Authenticating" : "Setting up your account"}
+                  {step === "checking" ? "Checking your session…" :
+                   step === "redirecting" ? "Redirecting to sign in…" :
+                   "Setting up your account"}
                 </p>
-                <p className="text-muted-foreground text-sm" key={statusMsg}>{statusMsg}</p>
-                {step === "popup" && (
+                {statusMsg && (
+                  <p className="text-muted-foreground text-sm" key={statusMsg}>{statusMsg}</p>
+                )}
+                {step === "redirecting" && (
                   <p className="text-xs text-muted-foreground/60 mt-2">
-                    {activeProvider === "email" ? "Check your email for a magic link." : "Complete sign-in in the popup window."}
+                    You'll be redirected to complete sign-in, then brought back here.
                   </p>
                 )}
               </div>
@@ -215,14 +232,6 @@ export default function Login() {
                   <div key={i} className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
                 ))}
               </div>
-              {step === "popup" && (
-                <button
-                  onClick={() => { setStep("choose"); setActiveProvider(null); setError(null); }}
-                  className="text-xs text-muted-foreground hover:text-foreground underline"
-                >
-                  Cancel
-                </button>
-              )}
             </div>
           ) : (
             <div className="space-y-3">
@@ -284,7 +293,7 @@ export default function Login() {
 
         <p className="text-center text-xs text-muted-foreground mt-6 leading-relaxed">
           By signing in, an invisible Solana wallet is created for you.<br />
-          No seed phrases. No crypto knowledge required. Powered by Web3Auth.
+          No seed phrases. No crypto knowledge required.
         </p>
       </div>
     </div>

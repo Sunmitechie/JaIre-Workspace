@@ -75,8 +75,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "@web3auth/base": "^9.7.0",
-    "@web3auth/modal": "^10.15.0",
+    "@web3auth/no-modal": "10.15.0",
     "viem": "^2.47.11",
     "vite-plugin-node-polyfills": "^0.26.0"
   }
