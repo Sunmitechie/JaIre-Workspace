@@ -192,7 +192,6 @@ export default function Baire() {
         const decoder = new TextDecoder();
         let transcript = "";
         let agentText = "";
-        const audioChunks: number[] = [];
 
         while (true) {
           const { done, value } = await reader.read();
@@ -203,12 +202,11 @@ export default function Baire() {
               const ev = JSON.parse(line.slice(6));
               if (ev.type === "user_transcript") {
                 transcript = ev.content;
-                // Insert user message + new baire placeholder
                 setMessages((prev) => {
                   const updated = prev.filter((m) => !(m.role === "baire" && m.isStreaming && m.content === ""));
                   return [...updated,
                     { role: "user", content: transcript },
-                    { role: "baire", content: "", isStreaming: true }
+                    { role: "baire", content: "", isStreaming: true },
                   ];
                 });
               } else if (ev.type === "agent_text") {
@@ -216,24 +214,12 @@ export default function Baire() {
                 setMessages((prev) => {
                   const u = [...prev];
                   const idx = u.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
-                  if (idx !== undefined) u[idx] = { role: "baire", content: agentText, isStreaming: true };
-                  return u;
-                });
-              } else if (ev.type === "audio_chunk" && Array.isArray(ev.data)) {
-                audioChunks.push(...ev.data);
-              } else if (ev.type === "done") {
-                setMessages((prev) => {
-                  const u = [...prev];
-                  const idx = u.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
                   if (idx !== undefined) u[idx] = { role: "baire", content: agentText, isStreaming: false };
                   return u;
                 });
-                // Play the ElevenLabs audio
-                if (audioChunks.length > 0 && !isMutedRef.current) {
-                  setBaireState("speaking");
-                  const blob = new Blob([new Uint8Array(audioChunks)], { type: "audio/mpeg" });
-                  await playAudioBlob(blob);
-                }
+              } else if (ev.type === "done" && agentText) {
+                // TTS via ElevenLabs — called AFTER SSE stream fully closes
+                await speakWithElevenLabs(agentText);
               }
             } catch {}
           }
@@ -245,12 +231,12 @@ export default function Baire() {
           if (idx !== undefined) u[idx] = { role: "baire", content: "Couldn't process that. Try again?", isStreaming: false };
           return u;
         });
-      } finally {
         setBaireState("idle");
+      } finally {
         setListeningLabel("Listening…");
       }
     },
-    [convId]
+    [convId, speakWithElevenLabs]
   );
 
   const startVoice = useCallback(async () => {

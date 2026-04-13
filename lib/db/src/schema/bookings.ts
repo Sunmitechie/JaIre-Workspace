@@ -31,6 +31,8 @@ export const bookings = pgTable("bookings", {
   refundedAmountUsdc: real("refunded_amount_usdc"),
   escrowAccount: text("escrow_account"),
   transactionSignature: text("transaction_signature"),
+  escrowTxSignature: text("escrow_tx_signature"),
+  settlementTxSignature: text("settlement_tx_signature"),
   paymentMethod: paymentMethodEnum("payment_method").notNull().default("paystack"),
   ngnAmountPaid: real("ngn_amount_paid"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),

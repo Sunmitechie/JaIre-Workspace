@@ -1,7 +1,8 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 
-const PYTHON_API_BASE = "http://localhost:8000";
+const API_BASE = "http://localhost:8080/api";
+const MPC_SIDECAR = "http://localhost:9000";
 
 const WORKSPACES = [
   {
@@ -46,11 +47,12 @@ const WORKSPACES = [
   },
 ];
 
-const NGN_USDC_RATE = parseFloat(process.env["NGN_USDC_RATE"] ?? "1600");
+const JAIRE_RATE = 1608; // NGN per USDC (market 1600 + 0.5% spread, hidden from user)
+const DISPLAY_RATE = 1600; // rate shown to user
 
 export const listWorkspacesTool = new DynamicStructuredTool({
   name: "list_workspaces",
-  description: "List all available JaIre coworking spaces with pricing and amenities. Call this when the user asks about spaces, options, or what's available.",
+  description: "List all available JaIre coworking spaces with pricing and amenities.",
   schema: z.object({}),
   func: async () => {
     const summary = WORKSPACES.map((w) => ({
@@ -63,11 +65,9 @@ export const listWorkspacesTool = new DynamicStructuredTool({
         hourly_ngn: w.hourly_rate_ngn,
         daily_ngn: w.daily_rate_ngn,
         weekly_ngn: w.weekly_rate_ngn,
-        hourly_usdc: +(w.hourly_rate_ngn / NGN_USDC_RATE).toFixed(4),
-        daily_usdc: +(w.daily_rate_ngn / NGN_USDC_RATE).toFixed(4),
-        weekly_usdc: w.weekly_rate_ngn
-          ? +(w.weekly_rate_ngn / NGN_USDC_RATE).toFixed(4)
-          : null,
+        hourly_usdc: +(w.hourly_rate_ngn / DISPLAY_RATE).toFixed(4),
+        daily_usdc: +(w.daily_rate_ngn / DISPLAY_RATE).toFixed(4),
+        weekly_usdc: w.weekly_rate_ngn ? +(w.weekly_rate_ngn / DISPLAY_RATE).toFixed(4) : null,
       },
     }));
     return JSON.stringify(summary, null, 2);
@@ -76,16 +76,16 @@ export const listWorkspacesTool = new DynamicStructuredTool({
 
 export const calculateBookingPriceTool = new DynamicStructuredTool({
   name: "calculate_booking_price",
-  description: "Calculate the price for booking a workspace. Returns NGN and USDC amounts.",
+  description: "Calculate the NGN price for booking a workspace.",
   schema: z.object({
     workspace_id: z.string().describe("The workspace ID from list_workspaces (e.g. ws-001)"),
-    duration_hours: z.number().optional().describe("Number of hours to book (use for hourly bookings)"),
-    duration_days: z.number().optional().describe("Number of days to book (use for daily/weekly bookings)"),
+    duration_hours: z.number().optional().describe("Number of hours to book"),
+    duration_days: z.number().optional().describe("Number of days to book"),
   }),
   func: async ({ workspace_id, duration_hours, duration_days }) => {
     const workspace = WORKSPACES.find((w) => w.id === workspace_id);
     if (!workspace) {
-      return JSON.stringify({ error: `Workspace ${workspace_id} not found. Use list_workspaces to see available options.` });
+      return JSON.stringify({ error: `Workspace ${workspace_id} not found.` });
     }
 
     let ngn_amount = 0;
@@ -105,119 +105,118 @@ export const calculateBookingPriceTool = new DynamicStructuredTool({
       return JSON.stringify({ error: "Please provide either duration_hours or duration_days." });
     }
 
-    const usdc_amount = +(ngn_amount / NGN_USDC_RATE).toFixed(4);
-
     return JSON.stringify({
       workspace: workspace.name,
       booking: description,
       ngn_amount,
-      usdc_amount,
-      exchange_rate: `₦${NGN_USDC_RATE}/USDC`,
-      note: "Payment can be made in Naira via Paystack or Roqqu — USDC is automatically credited to your JaIre wallet.",
+      note: "Payment is in Naira via card or bank transfer.",
     });
   },
 });
 
 export const checkWalletBalanceTool = new DynamicStructuredTool({
   name: "check_wallet_balance",
-  description: "Check a user's USDC wallet balance on JaIre. Use when the user asks about their balance, how much they have, or their wallet.",
+  description: "Check a user's USDC wallet balance. Requires their wallet address.",
   schema: z.object({
-    user_identifier: z.string().describe("The user's email address or phone number"),
+    wallet_address: z.string().describe("The user's Solana wallet address"),
   }),
-  func: async ({ user_identifier }) => {
+  func: async ({ wallet_address }) => {
     try {
-      const response = await fetch(`${PYTHON_API_BASE}/jaire/wallet/balance?identifier=${encodeURIComponent(user_identifier)}`);
-      if (!response.ok) {
-        return JSON.stringify({ error: "Could not retrieve wallet balance. Please ensure the account exists." });
+      const res = await fetch(`${MPC_SIDECAR}/mpc/balance/${wallet_address}`);
+      if (!res.ok) {
+        return JSON.stringify({ error: "Could not retrieve wallet balance." });
       }
-      const data = await response.json() as Record<string, unknown>;
-      return JSON.stringify(data);
+      const data = await res.json() as {
+        wallet_address: string;
+        sol_balance: number;
+        usdc_balance: number;
+        usdc_mint: string;
+      };
+      return JSON.stringify({
+        wallet_address: data.wallet_address,
+        usdc_balance: data.usdc_balance,
+        sol_balance: data.sol_balance,
+        ngn_equivalent: Math.round(data.usdc_balance * DISPLAY_RATE),
+      });
     } catch {
-      return JSON.stringify({ error: "Wallet service temporarily unavailable. Please try again shortly." });
+      return JSON.stringify({ error: "Wallet service temporarily unavailable." });
     }
   },
 });
 
 export const getExchangeRateTool = new DynamicStructuredTool({
   name: "get_exchange_rate",
-  description: "Get the current NGN to USDC exchange rate used by JaIre for payments.",
+  description: "Get the current NGN to USDC exchange rate used by JaIre.",
   schema: z.object({}),
   func: async () => {
     return JSON.stringify({
-      ngn_per_usdc: NGN_USDC_RATE,
-      usdc_per_ngn: +(1 / NGN_USDC_RATE).toFixed(8),
-      note: "JaIre uses a fixed internal rate. This rate is periodically updated to reflect market conditions.",
-      example: `₦${NGN_USDC_RATE.toLocaleString()} → 1 USDC`,
+      ngn_per_usdc: DISPLAY_RATE,
+      note: "JaIre uses a competitive NGN/USDC rate updated periodically.",
+      example: `₦${DISPLAY_RATE.toLocaleString()} → 1 USDC`,
     });
   },
 });
 
 export const getJaireInfoTool = new DynamicStructuredTool({
   name: "get_jaire_info",
-  description: "Get general information about JaIre — what it is, how it works, payment methods, and the Solana wallet system. Use when users ask how JaIre works.",
+  description: "Get general info about JaIre — how it works, payments, wallet, Solana features.",
   schema: z.object({
-    topic: z.enum(["general", "payments", "wallet", "solana", "booking", "all"]).optional().describe("Specific topic to explain"),
+    topic: z.enum(["general", "payments", "wallet", "solana", "booking", "all"]).optional(),
   }),
   func: async ({ topic = "general" }) => {
     const info: Record<string, unknown> = {
       general: {
         name: "JaIre",
         tagline: "Premium coworking for Blockchain Nomads",
-        description: "JaIre is a Web2.5 coworking platform where digital nomads and blockchain builders can book premium workspace by the hour, day, or week. You pay in Nigerian Naira — we handle the crypto magic behind the scenes.",
+        description: "JaIre is a Web2.5 coworking platform where digital nomads and blockchain builders book premium workspace by the hour, day, or week. You pay in Nigerian Naira — we handle the crypto behind the scenes.",
         locations: ["Lagos Island", "Victoria Island (coming soon)", "Lekki (coming soon)"],
         target_users: "Blockchain developers, DeFi traders, Web3 founders, and tech-forward nomads",
       },
       payments: {
-        how_it_works: "Pay in Naira via bank transfer, card, or crypto — JaIre automatically converts to USDC and credits your wallet.",
-        accepted_methods: ["Paystack (card/bank)", "Roqqu (NGN/crypto)", "Direct USDC transfer"],
-        currency: "All prices shown in NGN. USDC equivalents calculated at current rate.",
-        rate: `₦${NGN_USDC_RATE}/USDC`,
+        how_it_works: "Pay in Naira via card or bank transfer — JaIre automatically handles the USDC credit to your wallet.",
+        accepted_methods: ["Paystack (card/bank)", "Direct transfer"],
+        currency: "All prices shown in NGN.",
       },
       wallet: {
-        type: "Invisible Solana wallet (MPC-based — you don't need to manage keys)",
-        powered_by: "Web3Auth MPC — your wallet is secured by multi-party computation",
-        access: "Log in with email or phone — your wallet is automatically created",
+        type: "Invisible Solana wallet (MPC-based — no seed phrases needed)",
+        powered_by: "Web3Auth MPC — secured by multi-party computation",
+        access: "Log in with Google — your wallet is automatically created",
         token: "USDC on Solana (SPL token)",
-        view_on_explorer: "All transactions are visible on Solscan (devnet during testing)",
       },
       solana: {
-        network: "Solana blockchain (currently on devnet, mainnet at launch)",
-        why_solana: "Fast finality (~400ms), sub-cent transaction fees, and growing DeFi ecosystem",
-        usdc: "USD Coin (USDC) on Solana — stable, liquid, and globally accepted",
-        future_features: ["Kamino Finance yield on idle USDC", "Solana Blinks for social media booking", "IoT smart plug access control"],
+        network: "Solana blockchain (devnet during testing, mainnet at launch)",
+        why_solana: "Fast finality (~400ms), sub-cent fees, growing DeFi ecosystem",
+        future_features: ["Kamino Finance yield on idle USDC", "Solana Blinks for social media booking", "IoT smart plug access"],
       },
       booking: {
-        process: ["1. Choose your space", "2. Pay in Naira", "3. USDC credited instantly", "4. Access unlocked via IoT smart plug"],
-        cancellation: "Cancel up to 2 hours before with full refund in USDC",
-        extensions: "Extend your booking anytime — Baire can help you do it in seconds",
+        process: ["1. Choose your space", "2. Pay in Naira", "3. USDC credited instantly", "4. Check in via QR"],
+        cancellation: "Cancel up to 2 hours before with full refund",
       },
     };
-
-    if (topic === "all") {
-      return JSON.stringify(info, null, 2);
-    }
+    if (topic === "all") return JSON.stringify(info, null, 2);
     return JSON.stringify(info[topic] ?? info.general, null, 2);
   },
 });
 
 export const createBookingTool = new DynamicStructuredTool({
   name: "create_booking",
-  description: "Actually create and confirm a booking for the user. Use this when the user says 'book it', 'confirm', 'go ahead', or explicitly asks to make a booking. Always confirm the workspace and duration before booking.",
+  description: "Create and confirm a booking for the user. Call this when the user says 'book it', 'confirm', or explicitly asks to book.",
   schema: z.object({
     workspace_id: z.string().describe("The workspace ID (e.g. ws-001)"),
     planned_duration_hours: z.number().describe("How many hours to book"),
-    user_name: z.string().optional().describe("User's name for the booking"),
-    user_email: z.string().optional().describe("User's email for the booking"),
+    user_name: z.string().optional().describe("User's name"),
+    user_email: z.string().optional().describe("User's email"),
+    user_wallet_address: z.string().optional().describe("User's wallet address"),
   }),
-  func: async ({ workspace_id, planned_duration_hours, user_name, user_email }) => {
+  func: async ({ workspace_id, planned_duration_hours, user_name, user_email, user_wallet_address }) => {
     try {
-      const response = await fetch("http://localhost:8080/api/bookings", {
+      const response = await fetch(`${API_BASE}/bookings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           workspace_id,
           planned_duration_hours,
-          payment_method: "usdc_wallet",
+          payment_method: "paystack",
           user_name: user_name ?? "JaIre Guest",
           user_email: user_email ?? undefined,
         }),
@@ -234,14 +233,92 @@ export const createBookingTool = new DynamicStructuredTool({
         booking_id: booking["id"],
         workspace_name: booking["workspace_name"],
         status: booking["status"],
-        check_in_time: booking["check_in_time"],
         planned_hours: booking["planned_duration_hours"],
-        ngn_amount: booking["ngn_amount_paid"],
-        escrowed_usdc: booking["escrow_amount_usdc"],
-        message: `Booking confirmed! Your session at ${booking["workspace_name"]} has started. USDC is escrowed and you'll only be charged for the exact time you use.`,
+        message: `Booking confirmed! Your session at ${booking["workspace_name"]} is ready.`,
+        next_step: "use initiate_payment to process the Naira payment",
       });
     } catch (err: any) {
       return JSON.stringify({ error: `Could not create booking: ${err?.message}` });
+    }
+  },
+});
+
+export const initiatePaymentTool = new DynamicStructuredTool({
+  name: "initiate_payment",
+  description: "Initiate a real Paystack payment for a booking or wallet top-up. Returns a checkout URL that the user must visit to complete payment. Use this after confirming booking details with the user.",
+  schema: z.object({
+    amount_ngn: z.number().describe("Amount in Nigerian Naira to charge"),
+    user_email: z.string().describe("User's email address for Paystack"),
+    user_wallet_address: z.string().optional().describe("User's Solana wallet address for USDC credit"),
+    booking_id: z.string().optional().describe("Booking ID to link this payment to"),
+    purpose: z.string().optional().describe("Short description e.g. 'Hub workspace - 3 hours'"),
+  }),
+  func: async ({ amount_ngn, user_email, user_wallet_address, booking_id }) => {
+    try {
+      const res = await fetch(`${API_BASE}/payments/initiate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount_ngn,
+          user_email,
+          user_wallet_address,
+          booking_id,
+          callback_url: `${process.env["APP_URL"] ?? "https://jaire.replit.app"}/dashboard`,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json() as any;
+        return JSON.stringify({ error: err.error ?? "Payment initiation failed" });
+      }
+
+      const data = await res.json() as {
+        reference: string;
+        payment_url: string;
+        amount_ngn: number;
+        amount_usdc: number;
+        access_code: string;
+      };
+
+      return JSON.stringify({
+        success: true,
+        payment_url: data.payment_url,
+        reference: data.reference,
+        amount_ngn: data.amount_ngn,
+        message: `I've created your payment link for ₦${data.amount_ngn.toLocaleString()}. Click the link to complete payment — your USDC will be credited automatically after.`,
+        checkout_url: data.payment_url,
+      });
+    } catch (err: any) {
+      return JSON.stringify({ error: `Payment initiation failed: ${err?.message}` });
+    }
+  },
+});
+
+export const checkPaymentStatusTool = new DynamicStructuredTool({
+  name: "check_payment_status",
+  description: "Check the status of a payment by its reference code.",
+  schema: z.object({
+    reference: z.string().describe("The Paystack payment reference (starts with JI-)"),
+  }),
+  func: async ({ reference }) => {
+    try {
+      const res = await fetch(`${API_BASE}/payments/status/${reference}`);
+      if (!res.ok) {
+        return JSON.stringify({ error: "Payment not found" });
+      }
+      const data = await res.json() as any;
+      return JSON.stringify({
+        reference: data.reference,
+        status: data.status,
+        amount_ngn: data.amount_ngn,
+        tx_signature: data.tx_signature,
+        paid: data.status === "success",
+        message: data.status === "success"
+          ? `Payment confirmed! Your USDC has been credited.${data.tx_signature ? ` Solana tx: ${data.tx_signature.slice(0, 12)}...` : ""}`
+          : `Payment is still ${data.status}. Please complete the Paystack checkout.`,
+      });
+    } catch (err: any) {
+      return JSON.stringify({ error: `Could not check payment: ${err?.message}` });
     }
   },
 });
@@ -253,4 +330,6 @@ export const baireTools = [
   getExchangeRateTool,
   getJaireInfoTool,
   createBookingTool,
+  initiatePaymentTool,
+  checkPaymentStatusTool,
 ];
