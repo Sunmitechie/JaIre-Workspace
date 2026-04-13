@@ -4,11 +4,13 @@ import {
   deriveUserFactorShare,
   getUserWalletAddress,
   isRegisteredUser,
+  deriveUserDevnetKeypair,
 } from "../services/mpc-service.js";
 import {
   getWalletBalance,
   fundUserWallet,
   signUserUSDCTransfer,
+  vaultToUserTransfer,
 } from "../services/solana-wallet.js";
 
 const router = Router();
@@ -284,6 +286,82 @@ router.post("/sign-usdc-transfer", async (req: Request, res: Response) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[mpc/sign-usdc-transfer] error:", message);
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * POST /mpc/internal/escrow   [INTERNAL — server-to-server only]
+ *
+ * Move USDC from a user's derived devnet wallet into the JaIre vault (escrow).
+ * Called after a confirmed Paystack payment when a booking_id is linked.
+ *
+ * Body: { verifier_id: string, amount_usdc: number, mint?: string }
+ */
+router.post("/internal/escrow", async (req: Request, res: Response) => {
+  try {
+    const { verifier_id, amount_usdc, mint } = req.body as {
+      verifier_id?: string;
+      amount_usdc?: number;
+      mint?: string;
+    };
+
+    if (!verifier_id) { res.status(400).json({ error: "verifier_id required" }); return; }
+    if (!amount_usdc || amount_usdc <= 0) { res.status(400).json({ error: "amount_usdc must be > 0" }); return; }
+
+    const vaultAddress = process.env["JAIRE_VAULT_ADDRESS"];
+    if (!vaultAddress) { res.status(500).json({ error: "JAIRE_VAULT_ADDRESS not set" }); return; }
+
+    const result = await signUserUSDCTransfer(verifier_id, vaultAddress, amount_usdc, mint, false);
+
+    console.log(
+      `[mpc/internal/escrow] ${result.is_simulated ? "SIM" : "LIVE"} ` +
+      `${amount_usdc} USDC → vault tx=${result.tx_signature}`,
+    );
+
+    res.json({ ...result, vault_address: vaultAddress });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[mpc/internal/escrow] error:", message);
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * POST /mpc/vault-settle   [INTERNAL — server-to-server only]
+ *
+ * Return USDC from the vault back to a user wallet (checkout refund).
+ * The vault keeps the billed amount; only the excess is returned.
+ *
+ * Body: { to_address: string, amount_usdc: number, mint?: string }
+ */
+router.post("/vault-settle", async (req: Request, res: Response) => {
+  try {
+    const { to_address, amount_usdc, mint } = req.body as {
+      to_address?: string;
+      amount_usdc?: number;
+      mint?: string;
+    };
+
+    if (!to_address) { res.status(400).json({ error: "to_address required" }); return; }
+    if (amount_usdc === undefined || amount_usdc < 0) { res.status(400).json({ error: "amount_usdc must be >= 0" }); return; }
+
+    if (amount_usdc === 0) {
+      res.json({ success: true, tx_signature: null, amount_usdc: 0, message: "No refund needed" });
+      return;
+    }
+
+    const result = await vaultToUserTransfer(to_address, amount_usdc, mint);
+
+    console.log(
+      `[mpc/vault-settle] ${result.is_simulated ? "SIM" : "LIVE"} ` +
+      `${amount_usdc} USDC → ${to_address.slice(0, 8)}... tx=${result.tx_signature}`,
+    );
+
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[mpc/vault-settle] error:", message);
     res.status(400).json({ error: message });
   }
 });

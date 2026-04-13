@@ -57,10 +57,10 @@ export default function Dashboard() {
   const fetchBalance = useCallback(async () => {
     if (!user?.walletAddress) return;
     try {
-      const res = await fetch(`${BASE_URL}/api/jaire/devnet/balance/${user.walletAddress}`);
+      const res = await fetch(`${BASE_URL}/api/wallet/balance?address=${user.walletAddress}`);
       if (!res.ok) return;
       const d = await res.json();
-      setNgnBalance((d.usdc_balance ?? 0) * NGN_PER_USDC);
+      setNgnBalance((d.balance_usdc ?? 0) * NGN_PER_USDC);
     } catch {}
   }, [user?.walletAddress]);
 

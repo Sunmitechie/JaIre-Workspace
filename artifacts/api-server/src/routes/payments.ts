@@ -8,11 +8,12 @@ const router = Router();
 
 const PAYSTACK_SECRET = process.env["PAYSTACK_SECRET_KEY"]!;
 const PAYSTACK_BASE = "https://api.paystack.co";
+const MPC_SIDECAR = "http://localhost:9000";
 
-// FX: JaIre earns 0.5% on each conversion
-const MARKET_RATE_NGN_PER_USDC = 1600;
+// JaIre earns the 0.5% spread between market and JaIre rate — hidden from user
+const MARKET_RATE = 1600;       // NGN / USDC shown to user
+const JAIRE_RATE = 1608;        // actual rate used (1600 × 1.005)
 const FX_SPREAD_PCT = 0.5;
-const JAIRE_RATE = MARKET_RATE_NGN_PER_USDC * (1 + FX_SPREAD_PCT / 100); // ~1608
 
 function ngnToUsdc(ngn: number): number {
   return parseFloat((ngn / JAIRE_RATE).toFixed(6));
@@ -23,7 +24,6 @@ function generateRef(): string {
 }
 
 // ── POST /api/payments/initiate ────────────────────────────────────────────
-// Initiates a Paystack transaction and stores a pending payment record
 router.post("/payments/initiate", async (req, res) => {
   try {
     const { amount_ngn, user_email, user_wallet_address, booking_id, callback_url } = req.body as {
@@ -42,7 +42,7 @@ router.post("/payments/initiate", async (req, res) => {
     const amountKobo = Math.round(amount_ngn * 100);
     const amountUsdc = ngnToUsdc(amount_ngn);
 
-    // Call Paystack initialize
+    // Hit real Paystack API
     const psRes = await fetch(`${PAYSTACK_BASE}/transaction/initialize`, {
       method: "POST",
       headers: {
@@ -58,7 +58,7 @@ router.post("/payments/initiate", async (req, res) => {
         metadata: {
           custom_fields: [
             { display_name: "Booking ID", variable_name: "booking_id", value: booking_id ?? "" },
-            { display_name: "USDC Amount", variable_name: "usdc_amount", value: amountUsdc },
+            { display_name: "Wallet", variable_name: "wallet_address", value: user_wallet_address ?? "" },
           ],
         },
       }),
@@ -69,13 +69,13 @@ router.post("/payments/initiate", async (req, res) => {
       return res.status(502).json({ error: psData.message ?? "Paystack error" });
     }
 
-    // Store pending payment
+    // Record pending payment
     await db.insert(payments).values({
       bookingId: booking_id,
       userEmail: user_email,
       userWalletAddress: user_wallet_address,
       amountNgn: amount_ngn,
-      amountUsdc: amountUsdc,
+      amountUsdc,
       fxRate: JAIRE_RATE,
       fxSpreadPct: FX_SPREAD_PCT,
       reference,
@@ -83,7 +83,7 @@ router.post("/payments/initiate", async (req, res) => {
       status: "pending",
     });
 
-    // Upsert user record
+    // Upsert user if wallet address provided
     if (user_wallet_address) {
       await db
         .insert(users)
@@ -99,7 +99,7 @@ router.post("/payments/initiate", async (req, res) => {
       payment_url: psData.data.authorization_url,
       amount_ngn,
       amount_usdc: amountUsdc,
-      fx_rate: JAIRE_RATE,
+      fx_rate: MARKET_RATE, // show user market rate, not JaIre rate
       access_code: psData.data.access_code,
     });
   } catch (err: any) {
@@ -115,33 +115,24 @@ router.get("/payments/verify/:reference", async (req, res) => {
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
     });
     const psData = (await psRes.json()) as any;
-
     if (!psRes.ok || !psData.status) {
       return res.status(502).json({ error: psData.message ?? "Paystack verification failed" });
     }
 
-    const txData = psData.data;
-    const isPaid = txData.status === "success";
-
+    const isPaid = psData.data.status === "success";
     if (isPaid) {
-      await db
-        .update(payments)
-        .set({ status: "success", updatedAt: new Date() })
-        .where(eq(payments.reference, reference));
-
-      // Trigger USDC funding if not already done
       const [payment] = await db.select().from(payments).where(eq(payments.reference, reference));
-      if (payment?.userWalletAddress && !payment.txSignature) {
-        await triggerUsdcFunding(payment);
+      if (payment && payment.status !== "success") {
+        await db.update(payments).set({ status: "success", updatedAt: new Date() }).where(eq(payments.reference, reference));
+        await processSuccessfulPayment(payment);
       }
     }
 
     res.json({
       reference,
-      status: txData.status,
-      amount_ngn: txData.amount / 100,
+      status: psData.data.status,
+      amount_ngn: psData.data.amount / 100,
       paid: isPaid,
-      paid_at: txData.paid_at,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message ?? "Verification failed" });
@@ -149,28 +140,35 @@ router.get("/payments/verify/:reference", async (req, res) => {
 });
 
 // ── POST /api/payments/webhook ─────────────────────────────────────────────
+// Paystack posts here on every charge.success event.
+// app.ts mounts express.raw() for this path so req.body is a raw Buffer.
 router.post("/payments/webhook", async (req, res) => {
   const signature = req.headers["x-paystack-signature"] as string;
-  const rawBody = JSON.stringify(req.body);
 
-  // Verify Paystack webhook signature
+  // req.body is a Buffer (from express.raw) — use it directly for HMAC
+  const rawBody: Buffer = Buffer.isBuffer(req.body)
+    ? req.body
+    : Buffer.from(JSON.stringify(req.body));
+
   const expected = crypto
     .createHmac("sha512", PAYSTACK_SECRET)
     .update(rawBody)
     .digest("hex");
 
   if (signature !== expected) {
+    console.warn("[webhook] Invalid Paystack signature — rejected");
     return res.status(400).json({ error: "Invalid signature" });
   }
 
-  const event = req.body as any;
-  res.sendStatus(200); // Acknowledge immediately
+  res.sendStatus(200); // Acknowledge immediately so Paystack doesn't retry
+
+  const event = JSON.parse(rawBody.toString("utf8")) as any;
 
   try {
     if (event.event === "charge.success") {
-      const { reference } = event.data;
-      const amountNgn = event.data.amount / 100;
+      const { reference } = event.data as { reference: string };
 
+      // Mark payment as success
       await db
         .update(payments)
         .set({ status: "success", updatedAt: new Date() })
@@ -178,18 +176,8 @@ router.post("/payments/webhook", async (req, res) => {
 
       const [payment] = await db.select().from(payments).where(eq(payments.reference, reference));
 
-      if (payment) {
-        // Update booking payment status if linked
-        if (payment.bookingId) {
-          await db
-            .update(bookings)
-            .set({ ngnAmountPaid: amountNgn, paymentMethod: "paystack" })
-            .where(eq(bookings.id, payment.bookingId));
-        }
-        // Trigger on-chain USDC credit
-        if (payment.userWalletAddress && !payment.txSignature) {
-          await triggerUsdcFunding(payment);
-        }
+      if (payment && !payment.txSignature) {
+        await processSuccessfulPayment(payment);
       }
     }
   } catch (err) {
@@ -209,35 +197,100 @@ router.get("/payments/status/:reference", async (req, res) => {
   }
 });
 
-// ── Internal: fund user wallet via MPC sidecar ─────────────────────────────
-async function triggerUsdcFunding(payment: typeof payments.$inferSelect) {
-  const MPC_SIDECAR = "http://localhost:9000";
-  try {
-    const res = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        wallet_address: payment.userWalletAddress,
-        usdc_amount: payment.amountUsdc,
-        reference: payment.reference,
-      }),
-    });
+// ── Core payment processor ─────────────────────────────────────────────────
+// Called after webhook confirms payment. Does two on-chain steps:
+// 1. Treasury → User wallet  (credit NGN payment as USDC)
+// 2. User wallet → Vault     (escrow for linked booking)
+async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
+  const { userWalletAddress, amountUsdc, reference, bookingId, userEmail } = payment;
 
-    if (!res.ok) {
-      console.error("[payments] MPC fund-wallet failed:", await res.text());
-      return;
-    }
-
-    const data = (await res.json()) as { tx_signature?: string };
-    if (data.tx_signature) {
-      await db
-        .update(payments)
-        .set({ txSignature: data.tx_signature, updatedAt: new Date() })
-        .where(eq(payments.reference, payment.reference));
-    }
-  } catch (err) {
-    console.error("[payments] triggerUsdcFunding error:", err);
+  if (!userWalletAddress) {
+    console.warn(`[payment] No wallet address for payment ${reference} — skipping on-chain`);
+    return;
   }
+
+  // ── Step 1: Treasury → User wallet ─────────────────────────────────────
+  console.log(`[payment] Step 1: Treasury → User wallet (${amountUsdc} USDC)`);
+  const fundRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      wallet_address: userWalletAddress,
+      usdc_amount: amountUsdc,
+      reference,
+    }),
+  });
+
+  if (!fundRes.ok) {
+    console.error(`[payment] Fund-by-address failed:`, await fundRes.text());
+    return;
+  }
+
+  const fundData = (await fundRes.json()) as { tx_signature?: string; success?: boolean };
+  const fundTx = fundData.tx_signature;
+  console.log(`[payment] Funded user wallet tx: ${fundTx}`);
+
+  // Save funding tx
+  await db
+    .update(payments)
+    .set({ txSignature: fundTx, updatedAt: new Date() })
+    .where(eq(payments.reference, reference));
+
+  // ── Step 2: User wallet → Vault (escrow) if booking is linked ──────────
+  if (!bookingId) {
+    console.log(`[payment] No booking linked — skipping escrow`);
+    return;
+  }
+
+  // Look up verifier_id from users table
+  const [user] = await db.select().from(users).where(eq(users.email, userEmail));
+  if (!user?.verifierId) {
+    console.warn(`[payment] No verifier_id found for ${userEmail} — skipping escrow`);
+    return;
+  }
+
+  // Get the booking to know the escrow amount
+  const [booking] = await db.select().from(bookings).where(eq(bookings.id, bookingId));
+  if (!booking) {
+    console.warn(`[payment] Booking ${bookingId} not found`);
+    return;
+  }
+
+  const escrowAmount = booking.escrowAmountUsdc ?? amountUsdc;
+
+  console.log(`[payment] Step 2: User wallet → Vault (${escrowAmount} USDC escrow for booking ${bookingId})`);
+
+  const escrowRes = await fetch(`${MPC_SIDECAR}/mpc/internal/escrow`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      verifier_id: user.verifierId,
+      amount_usdc: escrowAmount,
+    }),
+  });
+
+  if (!escrowRes.ok) {
+    console.error(`[payment] Escrow failed:`, await escrowRes.text());
+    return;
+  }
+
+  const escrowData = (await escrowRes.json()) as { tx_signature?: string };
+  const escrowTx = escrowData.tx_signature;
+  console.log(`[payment] Escrow tx: ${escrowTx}`);
+
+  // Update booking: mark as confirmed, save escrow tx
+  await db
+    .update(bookings)
+    .set({
+      status: "active",  // booking confirmed + escrowed — ready for check-in
+      escrowTxSignature: escrowTx ?? null,
+      escrowAmountUsdc: escrowAmount,
+      ngnAmountPaid: payment.amountNgn,
+      paymentMethod: "paystack",
+    })
+    .where(eq(bookings.id, bookingId));
+
+  console.log(`[payment] Booking ${bookingId} confirmed with escrow`);
 }
 
 export default router;
