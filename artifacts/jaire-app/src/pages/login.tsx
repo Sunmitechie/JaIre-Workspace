@@ -9,6 +9,7 @@ import {
   loginWithEmail,
   hasOAuthRedirectResult,
   handleOAuthRedirect,
+  getWeb3AuthJWT,
   type SocialProvider,
 } from "@/lib/web3auth";
 
@@ -95,7 +96,7 @@ export default function Login() {
   }, []);
 
   const finishLogin = async (
-    idToken: string,
+    providerIdToken: string,
     email: string,
     name: string,
     profileImage: string,
@@ -103,19 +104,31 @@ export default function Login() {
     setStep("wallet");
     setStatusMsg("Setting up your account...");
 
-    // Derive MPC wallet — non-fatal; user still gets in on failure
+    // Derive MPC wallet — non-fatal; user still gets in on failure.
+    // We try two tokens:
+    //   1. authenticateUser() → Web3Auth-signed JWT (sidecar prefers this)
+    //   2. Fallback to the provider JWT from getUserInfo()
     let walletAddress: string | undefined;
     let verifierId: string | undefined;
     let resolvedEmail = email;
     let resolvedName = name;
+    let idTokenUsed = providerIdToken;
+
+    try {
+      // Get the Web3Auth-signed JWT (verified by sidecar's JWKS)
+      const web3authJWT = await getWeb3AuthJWT().catch(() => providerIdToken);
+      idTokenUsed = web3authJWT || providerIdToken;
+    } catch {
+      idTokenUsed = providerIdToken;
+    }
 
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12_000);
+      const timeout = setTimeout(() => controller.abort(), 15_000);
       const res = await fetch(`${BASE_URL}/api/mpc/wallet`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id_token: idToken }),
+        body: JSON.stringify({ id_token: idTokenUsed }),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -125,6 +138,22 @@ export default function Login() {
         verifierId = data.verifier_id;
         resolvedEmail = data.email || email;
         resolvedName = data.name || name;
+      } else {
+        // If Web3Auth JWT failed, retry with provider JWT
+        if (idTokenUsed !== providerIdToken && providerIdToken) {
+          const res2 = await fetch(`${BASE_URL}/api/mpc/wallet`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id_token: providerIdToken }),
+          });
+          if (res2.ok) {
+            const data2 = await res2.json();
+            walletAddress = data2.wallet_address;
+            verifierId = data2.verifier_id;
+            resolvedEmail = data2.email || email;
+            resolvedName = data2.name || name;
+          }
+        }
       }
     } catch {
       // wallet derivation failed — non-fatal, user still gets in

@@ -102,6 +102,30 @@ export async function getConnectedUser(): Promise<Web3AuthUser | null> {
 }
 
 /**
+ * Get a Web3Auth-signed JWT for backend authentication.
+ * `authenticateUser()` fetches a fresh JWT signed by Web3Auth's keys — this
+ * is what the MPC sidecar verifies against api-auth.web3auth.io/jwks.
+ *
+ * Falls back to the provider idToken if authenticateUser() is unavailable.
+ */
+export async function getWeb3AuthJWT(): Promise<string> {
+  try {
+    const kit = await initWeb3Auth();
+    if (kit.status !== COREKIT_STATUS.LOGGED_IN) throw new Error("Not logged in");
+    // authenticateUser() returns a Web3Auth-signed token verifiable by the sidecar
+    const result = await (kit as any).authenticateUser();
+    if (result?.idToken) return result.idToken as string;
+  } catch {
+    // fall through to getUserInfo fallback
+  }
+  // Fallback: provider JWT from getUserInfo (may work if verifier wraps it)
+  const kit = await initWeb3Auth();
+  const info = kit.getUserInfo() as Record<string, unknown>;
+  const token = (info.idToken as string) || (info.oAuthIdToken as string) || "";
+  return token;
+}
+
+/**
  * Verifier config for sapphire_devnet.
  * Reads from environment variables injected at build time by Vite.
  * Set GOOGLE_CLIENT_ID and WEB3AUTH_GOOGLE_VERIFIER in the env secrets.
