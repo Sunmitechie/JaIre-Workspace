@@ -5,7 +5,8 @@ import { ExternalLink, Wallet, ArrowUpRight, CheckCircle, Loader2, AlertCircle, 
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 const NGN_PER_USDC = 1600;
-const AMOUNTS_NGN = [5000, 10000, 25000, 50000];
+const MIN_NGN = 500;
+const MAX_NGN = 5_000_000;
 
 interface WalletState {
   sol: number;
@@ -43,8 +44,12 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
   const [wallet, setWallet] = useState<WalletState>({ sol: 0, usdc: 0, loading: true, error: null });
   const [fundState, setFundState] = useState<"idle" | "initiating" | "paying" | "polling" | "success" | "error">("idle");
   const [fundResult, setFundResult] = useState<FundResult | null>(null);
-  const [selectedNgn, setSelectedNgn] = useState(10000);
+  const [ngnInput, setNgnInput] = useState("");
   const [fundError, setFundError] = useState<string | null>(null);
+
+  const parsedNgn = parseInt(ngnInput.replace(/,/g, ""), 10) || 0;
+  const usdcPreview = parsedNgn > 0 ? (parsedNgn / NGN_PER_USDC).toFixed(4) : null;
+  const inputValid = parsedNgn >= MIN_NGN && parsedNgn <= MAX_NGN;
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = () => {
@@ -102,6 +107,10 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
   const handleFund = async () => {
     if (!user?.email) { setFundError("Please sign in first"); return; }
     if (!user.walletAddress) { setFundError("Wallet not ready yet"); return; }
+    if (!inputValid) {
+      setFundError(`Enter an amount between ${formatNGN(MIN_NGN)} and ${formatNGN(MAX_NGN)}`);
+      return;
+    }
 
     setFundState("initiating");
     setFundError(null);
@@ -112,7 +121,7 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          amount_ngn: selectedNgn,
+          amount_ngn: parsedNgn,
           user_email: user.email,
           user_wallet_address: user.walletAddress,
           callback_url: window.location.origin + (BASE_URL || "") + "/dashboard",
@@ -124,7 +133,7 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
         throw new Error(err.error ?? "Failed to initiate payment");
       }
 
-      const { access_code, reference, amount_usdc } = await initRes.json() as {
+      const { access_code, reference } = await initRes.json() as {
         access_code: string;
         reference: string;
         amount_usdc: number;
@@ -140,14 +149,12 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
       const handler = PaystackPop.setup({
         access_code,
         onClose: () => {
-          // User closed without paying — go back to idle
           setFundState("idle");
           stopPolling();
         },
         callback: (_response: any) => {
-          // Paystack confirms payment on their end — now poll our backend
-          // (Paystack has already fired the webhook to our server)
-          pollPayment(reference, selectedNgn);
+          // Paystack confirms on their end — poll our backend for on-chain settlement
+          pollPayment(reference, parsedNgn);
         },
       });
 
@@ -300,17 +307,42 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
             <div className="space-y-4">
               <div>
                 <p className="text-sm font-semibold mb-3">Top Up Account</p>
-                <div className="grid grid-cols-4 gap-2">
-                  {AMOUNTS_NGN.map((a) => (
+
+                {/* NGN free-form input */}
+                <div
+                  className="flex items-center gap-2 rounded-2xl px-4 py-3 transition-all"
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    border: `1px solid ${parsedNgn > 0 && !inputValid ? "rgba(248,113,113,0.5)" : parsedNgn > 0 ? "rgba(255,170,0,0.4)" : "rgba(255,255,255,0.1)"}`,
+                  }}
+                >
+                  <span className="text-xl font-bold text-muted-foreground shrink-0">₦</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={ngnInput}
+                    onChange={(e) => {
+                      // Allow digits and commas only
+                      const raw = e.target.value.replace(/[^\d]/g, "");
+                      if (raw === "") { setNgnInput(""); return; }
+                      // Format with commas
+                      setNgnInput(Number(raw).toLocaleString("en-NG"));
+                    }}
+                    className="flex-1 bg-transparent outline-none text-2xl font-bold placeholder:text-muted-foreground/30 w-full"
+                    style={{ color: parsedNgn > 0 && inputValid ? "white" : parsedNgn > 0 ? "rgba(248,113,113,0.9)" : undefined }}
+                    autoFocus
+                  />
+                </div>
+
+                {/* Quick-pick suggestions */}
+                <div className="flex gap-2 mt-2.5">
+                  {[5000, 10000, 25000, 50000].map((a) => (
                     <button
                       key={a}
-                      onClick={() => setSelectedNgn(a)}
-                      className="py-2 rounded-xl text-[11px] font-bold transition-all"
-                      style={
-                        selectedNgn === a
-                          ? { background: "rgba(255,170,0,0.15)", border: "1px solid rgba(255,170,0,0.4)", color: "#FFAA00" }
-                          : { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.6)" }
-                      }
+                      onClick={() => setNgnInput(a.toLocaleString("en-NG"))}
+                      className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold transition-all hover:opacity-80"
+                      style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.5)" }}
                     >
                       ₦{a >= 1000 ? `${a / 1000}k` : a}
                     </button>
@@ -318,10 +350,13 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
                 </div>
               </div>
 
-              <div className="flex justify-between text-sm px-1">
-                <span className="text-muted-foreground">You get approx.</span>
-                <span className="font-medium text-primary">{(selectedNgn / NGN_PER_USDC).toFixed(4)} USDC</span>
-              </div>
+              {/* USDC preview */}
+              {usdcPreview && inputValid && (
+                <div className="flex justify-between items-center text-sm px-1">
+                  <span className="text-muted-foreground">You receive approx.</span>
+                  <span className="font-bold text-primary">{usdcPreview} USDC</span>
+                </div>
+              )}
 
               {fundError && (
                 <div className="text-xs text-red-400 flex items-center gap-1.5">
@@ -332,19 +367,22 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
 
               <button
                 onClick={handleFund}
-                disabled={fundState !== "idle"}
-                className="w-full h-12 rounded-xl font-bold flex items-center justify-center gap-2 transition-all hover:opacity-90 disabled:opacity-50"
+                disabled={fundState !== "idle" || !inputValid}
+                className="w-full h-12 rounded-xl font-bold flex items-center justify-center gap-2 transition-all hover:opacity-90 disabled:opacity-40"
                 style={{
-                  background: "linear-gradient(135deg, hsl(43 100% 50%) 0%, hsl(38 100% 44%) 100%)",
-                  color: "hsl(220 40% 5%)",
+                  background: inputValid
+                    ? "linear-gradient(135deg, hsl(43 100% 50%) 0%, hsl(38 100% 44%) 100%)"
+                    : "rgba(255,255,255,0.07)",
+                  color: inputValid ? "hsl(220 40% 5%)" : "rgba(255,255,255,0.3)",
+                  border: inputValid ? "none" : "1px solid rgba(255,255,255,0.1)",
                 }}
               >
                 <ArrowUpRight className="w-4 h-4" />
-                Pay {formatNGN(selectedNgn)} via Paystack
+                {parsedNgn > 0 && inputValid ? `Pay ${formatNGN(parsedNgn)} via Paystack` : "Enter amount to continue"}
               </button>
 
               <p className="text-[10px] text-muted-foreground text-center">
-                Secured by Paystack · USDC credited live on Solana devnet
+                Secured by Paystack · USDC credited on Solana devnet
               </p>
             </div>
           )}
