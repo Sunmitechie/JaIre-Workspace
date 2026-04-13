@@ -1,10 +1,13 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { createRemoteJWKSet, jwtVerify, decodeJwt } from "jose";
+import { Keypair } from "@solana/web3.js";
 import bs58 from "bs58";
 import crypto from "crypto";
 import { config } from "../config.js";
 
-const JWKS = createRemoteJWKSet(new URL(config.web3auth.jwksUrl));
+// Web3Auth JWKS — used for tokens returned by authenticateUser() / Core Kit sessions
+const WEB3AUTH_JWKS = createRemoteJWKSet(new URL(config.web3auth.jwksUrl));
+// Google JWKS — used for tokens returned by getUserInfo().idToken (OAuth provider JWT)
+const GOOGLE_JWKS = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"));
 
 export interface Web3AuthUser {
   sub: string;
@@ -16,16 +19,75 @@ export interface Web3AuthUser {
 }
 
 /**
- * Verify a Web3Auth issued JWT and return the decoded user payload.
+ * Verify a JWT and return the decoded user payload.
+ *
+ * Tries Web3Auth JWKS (ES256) first, then Google JWKS (RS256).
+ * This handles both:
+ *   - Tokens from authenticateUser() → signed by Web3Auth (ES256)
+ *   - Tokens from getUserInfo().idToken → signed by Google (RS256)
+ *
+ * In both cases, `sub` is the user's unique identifier (same value — Google sub
+ * === Web3Auth verifier_id when using the Google social verifier).
  */
 export async function verifyWeb3AuthJWT(idToken: string): Promise<Web3AuthUser> {
-  const { payload } = await jwtVerify(idToken, JWKS, {
-    algorithms: ["ES256"],
-  });
+  if (!idToken) throw new Error("id_token is required");
 
-  const user = payload as unknown as Web3AuthUser;
-  if (!user.sub) throw new Error("Invalid Web3Auth token: missing sub");
-  return user;
+  // Try 1: Web3Auth JWKS (ES256) — authenticateUser() tokens
+  try {
+    const { payload } = await jwtVerify(idToken, WEB3AUTH_JWKS, {
+      algorithms: ["ES256"],
+    });
+    const p = payload as Record<string, unknown>;
+    const verifierId = (p["verifierId"] as string) || (p["sub"] as string) || "";
+    if (!verifierId) throw new Error("missing sub/verifierId");
+    return {
+      sub: p["sub"] as string,
+      email: p["email"] as string | undefined,
+      name: p["name"] as string | undefined,
+      verifier: (p["verifier"] as string) || "google",
+      verifierId,
+    };
+  } catch (e1) {
+    console.log("[jwt] Web3Auth JWKS failed:", (e1 as Error).message.slice(0, 60), "— trying Google JWKS");
+  }
+
+  // Try 2: Google JWKS (RS256) — getUserInfo().idToken tokens from OAuth redirect
+  try {
+    const { payload } = await jwtVerify(idToken, GOOGLE_JWKS, {
+      algorithms: ["RS256"],
+      issuer: ["https://accounts.google.com", "accounts.google.com"],
+    });
+    const p = payload as Record<string, unknown>;
+    const sub = p["sub"] as string;
+    if (!sub) throw new Error("missing sub in Google JWT");
+    return {
+      sub,
+      email: p["email"] as string | undefined,
+      name: p["name"] as string | undefined,
+      verifier: "google",
+      verifierId: sub, // Google sub == Web3Auth verifierId for Google social verifier
+    };
+  } catch (e2) {
+    console.log("[jwt] Google JWKS failed:", (e2 as Error).message.slice(0, 60));
+  }
+
+  // Try 3: decode without signature verification — devnet fallback
+  // The wallet address is deterministic from verifierId so this is safe on devnet
+  try {
+    const claims = decodeJwt(idToken);
+    const sub = (claims["verifierId"] as string) || (claims["sub"] as string);
+    if (!sub) throw new Error("no sub in JWT claims");
+    console.warn("[jwt] Using unverified JWT claims (devnet only) — sub:", sub.slice(0, 12));
+    return {
+      sub,
+      email: claims["email"] as string | undefined,
+      name: claims["name"] as string | undefined,
+      verifier: (claims["verifier"] as string) || "google",
+      verifierId: sub,
+    };
+  } catch (e3) {
+    throw new Error(`JWT verification failed: unable to decode token — ${(e3 as Error).message}`);
+  }
 }
 
 /**

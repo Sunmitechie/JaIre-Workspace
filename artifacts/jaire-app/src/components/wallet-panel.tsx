@@ -106,7 +106,6 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
 
   const handleFund = async () => {
     if (!user?.email) { setFundError("Please sign in first"); return; }
-    if (!user.walletAddress) { setFundError("Wallet not ready yet"); return; }
     if (!inputValid) {
       setFundError(`Enter an amount between ${formatNGN(MIN_NGN)} and ${formatNGN(MAX_NGN)}`);
       return;
@@ -114,6 +113,35 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
 
     setFundState("initiating");
     setFundError(null);
+
+    // ── Auto-derive wallet if missing ──────────────────────────────────────
+    // If walletAddress is missing (MPC derivation failed at login), retry now.
+    if (!user.walletAddress) {
+      if (!user.idToken) {
+        setFundError("Session expired. Please sign out and sign back in.");
+        setFundState("error");
+        return;
+      }
+      try {
+        const mpcRes = await fetch(`${BASE_URL}/api/mpc/wallet`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id_token: user.idToken }),
+        });
+        if (!mpcRes.ok) throw new Error("wallet derivation failed");
+        const mpcData = await mpcRes.json() as { wallet_address?: string };
+        if (!mpcData.wallet_address) throw new Error("no address returned");
+        // Patch localStorage so balance and subsequent calls work
+        const { updateUser } = await import("@/lib/auth");
+        updateUser({ walletAddress: mpcData.wallet_address });
+        // Refresh the local reference so the payment can continue
+        Object.assign(user, { walletAddress: mpcData.wallet_address });
+      } catch {
+        setFundError("Wallet not ready — please sign out and sign back in.");
+        setFundState("error");
+        return;
+      }
+    }
 
     try {
       // Step 1: Create Paystack transaction on backend
@@ -207,17 +235,24 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
 
           {/* Address */}
           <div className="font-mono text-xs text-muted-foreground mb-4 flex items-center gap-2">
-            <span>{shortAddr}</span>
-            {user?.walletAddress && (
-              <a
-                href={`https://solscan.io/account/${user.walletAddress}?cluster=devnet`}
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-primary transition-colors"
-                title="View on Solscan"
-              >
-                <ExternalLink className="w-3 h-3" />
-              </a>
+            {user?.walletAddress ? (
+              <>
+                <span>{shortAddr}</span>
+                <a
+                  href={`https://solscan.io/account/${user.walletAddress}?cluster=devnet`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="hover:text-primary transition-colors"
+                  title="View on Solscan"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </>
+            ) : (
+              <span className="text-amber-400/70 text-[11px] flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                Wallet will be set up when you pay
+              </span>
             )}
           </div>
 
