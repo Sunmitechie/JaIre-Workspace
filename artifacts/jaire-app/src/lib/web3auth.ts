@@ -77,14 +77,22 @@ export function hasOAuthRedirectResult(): boolean {
  * Returns the authenticated user on success, null if processing failed.
  */
 export async function handleOAuthRedirect(): Promise<Web3AuthUser | null> {
-  const kit = await initWeb3Auth();
-  if (kit.status !== COREKIT_STATUS.LOGGED_IN) {
-    await kit.handleRedirectResult();
+  try {
+    const kit = await initWeb3Auth();
+    if (kit.status !== COREKIT_STATUS.LOGGED_IN) {
+      await kit.handleRedirectResult();
+    }
+    // Web3Auth MPC Core Kit v2 requires commitChanges() to persist the
+    // threshold key after a redirect login (especially for first-time users).
+    if (kit.status === COREKIT_STATUS.LOGGED_IN) {
+      try { await (kit as any).commitChanges(); } catch { /* non-fatal */ }
+      return extractUserInfo(kit);
+    }
+    return null;
+  } catch (err) {
+    console.error("[web3auth] handleOAuthRedirect failed:", err);
+    return null;
   }
-  if (kit.status === COREKIT_STATUS.LOGGED_IN) {
-    return extractUserInfo(kit);
-  }
-  return null;
 }
 
 /**
