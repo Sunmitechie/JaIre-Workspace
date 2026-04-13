@@ -149,19 +149,19 @@ export default function Login() {
 
     setStep("done");
 
-    // Navigate to /dashboard. Use wouter first; fall back to hard navigation if the
+    // Navigate to /baire. Use wouter first; fall back to hard navigation if the
     // URL still has OAuth params that may confuse the router.
     try {
-      setLocation("/dashboard");
+      setLocation("/baire");
       // Give wouter one tick to update; if we're still on /login, force it.
       await delay(200);
       if (window.location.pathname.includes("/login")) {
         const base = BASE_URL.replace(/\/$/, "");
-        window.location.replace(`${base}/dashboard`);
+        window.location.replace(`${base}/baire`);
       }
     } catch {
       const base = BASE_URL.replace(/\/$/, "");
-      window.location.replace(`${base}/dashboard`);
+      window.location.replace(`${base}/baire`);
     }
   };
 
