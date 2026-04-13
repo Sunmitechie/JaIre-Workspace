@@ -129,18 +129,12 @@ router.post(
       const history = await getConversationHistory(id);
       const agentResponse = await runBaireAgent(userTranscript, history);
 
-      sendEvent(res, { type: "agent_text", content: agentResponse });
-      sendEvent(res, { type: "status", message: "Generating voice response..." });
-
-      for await (const chunk of elevenLabsTextToSpeechStream(agentResponse)) {
-        sendEvent(res, { type: "audio_chunk", data: Array.from(chunk) });
-      }
-
       await db.insert(messages).values([
         { conversationId: id, role: "user", content: userTranscript },
         { conversationId: id, role: "assistant", content: agentResponse },
       ]);
 
+      sendEvent(res, { type: "agent_text", content: agentResponse });
       sendEvent(res, { type: "done" });
       res.end();
     } catch (err: any) {
@@ -167,12 +161,6 @@ router.post("/baire/voice-quick", upload.single("audio"), async (req, res) => {
     const agentResponse = await runBaireAgent(userTranscript);
 
     sendEvent(res, { type: "agent_text", content: agentResponse });
-    sendEvent(res, { type: "status", message: "Generating voice response..." });
-
-    for await (const chunk of elevenLabsTextToSpeechStream(agentResponse)) {
-      sendEvent(res, { type: "audio_chunk", data: Array.from(chunk) });
-    }
-
     sendEvent(res, { type: "done" });
     res.end();
   } catch (err: any) {

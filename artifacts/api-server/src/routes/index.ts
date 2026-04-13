@@ -6,6 +6,7 @@ import bookingsRouter from "./bookings";
 import analyticsRouter from "./analytics";
 import walletRouter from "./wallet";
 import qrRouter from "./qr";
+import paymentsRouter from "./payments";
 
 const router: IRouter = Router();
 
@@ -16,5 +17,6 @@ router.use("/bookings", bookingsRouter);
 router.use("/analytics", analyticsRouter);
 router.use("/wallet", walletRouter);
 router.use("/qr", qrRouter);
+router.use(paymentsRouter);
 
 export default router;

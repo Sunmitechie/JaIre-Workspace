@@ -288,4 +288,55 @@ router.post("/sign-usdc-transfer", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /mpc/fund-by-address   [INTERNAL — server-to-server only]
+ *
+ * Fund a wallet by address directly. Used by the payments webhook after
+ * a successful Paystack charge — no user JWT required.
+ *
+ * Body: { wallet_address: string, usdc_amount: number, reference?: string, mint?: string }
+ */
+router.post("/fund-by-address", async (req: Request, res: Response) => {
+  try {
+    const { wallet_address, usdc_amount, reference, mint } = req.body as {
+      wallet_address?: string;
+      usdc_amount?: number;
+      reference?: string;
+      mint?: string;
+    };
+
+    if (!wallet_address) { res.status(400).json({ error: "wallet_address required" }); return; }
+    if (!usdc_amount || usdc_amount <= 0) { res.status(400).json({ error: "usdc_amount must be > 0" }); return; }
+
+    const result = await fundUserWallet(wallet_address, usdc_amount, mint, false);
+
+    console.log(
+      `[mpc/fund-by-address] ${result.is_simulated ? "SIM" : "LIVE"} ` +
+      `${usdc_amount} USDC → ${wallet_address.slice(0, 8)}... ref=${reference ?? "none"} tx=${result.tx_signature}`,
+    );
+
+    res.json({ ...result, wallet_address, reference });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[mpc/fund-by-address] error:", message);
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * GET /mpc/balance/:address   [INTERNAL — server-to-server only]
+ *
+ * Return SOL + USDC balance for any wallet address without a JWT.
+ */
+router.get("/balance/:address", async (req: Request, res: Response) => {
+  try {
+    const { address } = req.params;
+    const balance = await getWalletBalance(address);
+    res.json(balance);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
 export default router;

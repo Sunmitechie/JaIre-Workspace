@@ -308,11 +308,39 @@ React + Vite app at `/` (port 24196 in dev). Dark fintech aesthetic — Solana G
 - `GET /api/analytics/revenue` — Revenue breakdown
 - `GET /api/analytics/activity` — Activity event feed
 
-**DB tables (PostgreSQL):** `workspaces`, `bookings`, `activity_events` (plus pre-existing `jaire_*` Python tables)
+**DB tables (PostgreSQL):** `workspaces`, `bookings`, `activity_events`, `users`, `payments` (plus pre-existing `jaire_*` Python tables)
 
-**Vite proxy config:** `/api` → port 8080, `/jaire` → port 8000
+**Vite proxy config:** `/api` → port 8080, `/jaire` → port 8000, `/mpc` → port 9000
 
 **Codegen:** `lib/api-spec/openapi.yaml` → `pnpm run --filter @workspace/api-spec codegen` → `lib/api-client-react/src/generated/api.ts`
+
+---
+
+## Transaction Pipeline (Phase 3 — Real)
+
+### Payment flow
+1. User asks Baire to book → Baire calls `initiate_payment` tool
+2. `POST /api/payments/initiate` → Paystack `initialize_transaction` → returns checkout URL
+3. User pays NGN via Paystack → Paystack fires `charge.success` webhook
+4. `POST /api/payments/webhook` → validates HMAC → calls MPC sidecar `POST /mpc/fund-by-address`
+5. MPC sidecar treasury sends USDC to user wallet on devnet → stores `tx_signature`
+
+### Escrow flow (QR check-in/checkout)
+- **Check-in**: QR scanned → `POST /qr/checkin` → MPC sidecar `POST /mpc/fund-by-address` moves escrow USDC (8h cap) from user → vault → booking created with `escrow_tx_signature`
+- **Checkout**: QR scanned → actual seconds calculated → `billedUsdc` computed → MPC sidecar refunds excess USDC vault → user → booking completed with `settlement_tx_signature`
+
+### FX model (hidden from user)
+- Market rate: 1600 NGN/USDC
+- JaIre rate: 1608 NGN/USDC (+0.5% spread)
+- Revenue: JaIre retains 0.5% of every NGN→USDC conversion
+
+### MPC sidecar endpoints
+- `POST /mpc/wallet` — derive wallet address from JWT
+- `POST /mpc/wallet-balance` — SOL + USDC balance (requires JWT)
+- `GET /mpc/balance/:address` — balance without JWT (server-to-server)
+- `POST /mpc/fund-wallet` — treasury → user wallet (requires JWT)
+- `POST /mpc/fund-by-address` — treasury → wallet address (server-to-server, no JWT)
+- `POST /mpc/sign-usdc-transfer` — co-sign user USDC transfer (requires JWT)
 
 ---
 
@@ -324,3 +352,4 @@ React + Vite app at `/` (port 24196 in dev). Dark fintech aesthetic — Solana G
 - [ ] Kamino mainnet integration (klend-sdk)
 - [ ] Web3Auth frontend SDK integration (tKey MPC Core Kit)
 - [ ] Baire voice-to-voice (WebRTC audio)
+- [ ] Paystack webhook registration in Paystack dashboard (set webhook URL to /api/payments/webhook)

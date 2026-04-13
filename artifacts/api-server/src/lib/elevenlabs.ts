@@ -11,6 +11,7 @@ export async function elevenLabsSpeechToText(
   const form = new FormData();
   form.append("file", new Blob([audioBuffer], { type: mimeType }), "audio.webm");
   form.append("model_id", "scribe_v1");
+  form.append("language_code", "en");
 
   const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
     method: "POST",
