@@ -167,26 +167,20 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
         amount_usdc: number;
       };
 
-      // Step 2: Load Paystack inline and open popup
+      // Step 2: Load Paystack inline and open popup.
+      // resumeTransaction(access_code) is the correct method for a server-
+      // initiated transaction — it does NOT require the public key.
       await loadPaystackScript();
       const PaystackPop = (window as any).PaystackPop;
       if (!PaystackPop) throw new Error("Paystack checkout not available");
 
       setFundState("paying");
 
-      const handler = PaystackPop.setup({
-        access_code,
-        onClose: () => {
-          setFundState("idle");
-          stopPolling();
-        },
-        callback: (_response: any) => {
-          // Paystack confirms on their end — poll our backend for on-chain settlement
-          pollPayment(reference, parsedNgn);
-        },
-      });
+      // Start polling immediately — webhook fires even without a JS callback
+      pollPayment(reference, parsedNgn);
 
-      handler.openIframe();
+      const popup = new PaystackPop();
+      popup.resumeTransaction(access_code);
     } catch (err: any) {
       setFundError(err.message ?? "Payment failed. Please try again.");
       setFundState("error");
