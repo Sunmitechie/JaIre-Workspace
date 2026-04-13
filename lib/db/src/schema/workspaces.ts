@@ -20,6 +20,7 @@ export const workspaces = pgTable("workspaces", {
   isAvailable: boolean("is_available").notNull().default(true),
   workspaceType: workspaceTypeEnum("workspace_type").notNull().default("hot_desk"),
   floor: integer("floor").notNull().default(1),
+  qrSecret: text("qr_secret"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 

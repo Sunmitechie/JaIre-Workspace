@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Building2, History, MessageSquare, Activity, LogOut, Menu, X, Wallet } from "lucide-react";
+import { Building2, History, MessageSquare, LogOut, Menu, X, Wallet, LayoutDashboard, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
@@ -43,10 +43,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
   };
 
   const navLinks = [
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/scan", label: "Scan QR", icon: QrCode },
     { href: "/workspaces", label: "Spaces", icon: Building2 },
     { href: "/bookings", label: "Bookings", icon: History },
     { href: "/baire", label: "Baire AI", icon: MessageSquare },
-    { href: "/analytics", label: "Analytics", icon: Activity },
   ];
 
   const isPublicPage = location === "/" || location === "/login";
@@ -56,7 +57,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-40 w-full border-b border-white/6 bg-background/80 backdrop-blur-xl">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-8">
-            <Link href={user ? "/baire" : "/"} className="flex items-center gap-2.5 group">
+            <Link href={user ? "/dashboard" : "/"} className="flex items-center gap-2.5 group">
               <div
                 className="w-8 h-8 rounded-lg flex items-center justify-center transition-all group-hover:scale-105"
                 style={{

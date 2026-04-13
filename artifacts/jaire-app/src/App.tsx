@@ -8,6 +8,8 @@ import { isLoggedIn } from "@/lib/auth";
 
 import Home from "@/pages/home";
 import Login from "@/pages/login";
+import Dashboard from "@/pages/dashboard";
+import Scan from "@/pages/scan";
 import Workspaces from "@/pages/workspaces";
 import WorkspaceDetail from "@/pages/workspace-detail";
 import BookWorkspace from "@/pages/book";
@@ -16,7 +18,6 @@ import Bookings from "@/pages/bookings";
 import Baire from "@/pages/baire";
 import Analytics from "@/pages/analytics";
 import NotFound from "@/pages/not-found";
-// wallet page removed from public routes (web2 UX — no wallet exposed)
 
 const queryClient = new QueryClient();
 
@@ -34,6 +35,8 @@ function Router() {
       <Switch>
         <Route path="/" component={Home} />
         <Route path="/login" component={Login} />
+        <Route path="/dashboard">{() => <ProtectedRoute component={Dashboard} />}</Route>
+        <Route path="/scan">{() => <ProtectedRoute component={Scan} />}</Route>
         <Route path="/workspaces">{() => <ProtectedRoute component={Workspaces} />}</Route>
         <Route path="/workspaces/:id">{() => <ProtectedRoute component={WorkspaceDetail} />}</Route>
         <Route path="/book/:workspaceId">{() => <ProtectedRoute component={BookWorkspace} />}</Route>
