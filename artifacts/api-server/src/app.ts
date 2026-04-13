@@ -82,6 +82,13 @@ function makeMpcProxy() {
 app.use("/mpc", makeMpcProxy());
 app.use("/api/mpc", makeMpcProxy());
 
+// Paystack webhook needs raw body for HMAC-SHA512 signature verification.
+// Mount express.raw() BEFORE express.json() so the buffer is preserved.
+app.use(
+  "/api/payments/webhook",
+  express.raw({ type: "application/json" }),
+);
+
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 

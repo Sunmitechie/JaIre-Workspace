@@ -194,6 +194,71 @@ export async function fundUserWallet(
   }
 }
 
+// ── Vault keypair (escrow holder) ─────────────────────────────────────────
+
+let _vault: Keypair | null = null;
+
+export function getVaultKeypair(): Keypair {
+  if (_vault) return _vault;
+  const raw = process.env.JAIRE_VAULT_PRIVATE_KEY;
+  if (!raw) throw new Error("JAIRE_VAULT_PRIVATE_KEY not set");
+  let bytes: Uint8Array;
+  if (/^[0-9a-fA-F]{128}$/.test(raw)) {
+    bytes = Uint8Array.from(Buffer.from(raw, "hex"));
+  } else if (raw.startsWith("[")) {
+    bytes = Uint8Array.from(JSON.parse(raw) as number[]);
+  } else {
+    bytes = bs58.decode(raw);
+  }
+  _vault = Keypair.fromSecretKey(bytes);
+  return _vault;
+}
+
+/**
+ * Transfer USDC from the JaIre escrow vault back to a user wallet.
+ * Used during checkout to refund excess escrow.
+ */
+export async function vaultToUserTransfer(
+  userAddress: string,
+  amountUsdc: number,
+  mintAddress: string = DEFAULT_TEST_MINT,
+): Promise<FundResult> {
+  try {
+    const connection = getSolanaConnection();
+    const vault = getVaultKeypair();
+    const treasury = getTreasuryKeypair(); // pays for ATA creation if needed
+    const mint = new PublicKey(mintAddress);
+    const recipient = new PublicKey(userAddress);
+
+    const mintInfo = await getMint(connection, mint);
+    const atomicAmount = Math.round(amountUsdc * Math.pow(10, mintInfo.decimals));
+    if (atomicAmount === 0) {
+      return { success: true, tx_signature: null, amount_usdc: 0, wallet_address: userAddress, is_simulated: false };
+    }
+
+    const fromATA = await getOrCreateAssociatedTokenAccount(
+      connection, treasury, mint, vault.publicKey,
+    );
+    const toATA = await getOrCreateAssociatedTokenAccount(
+      connection, treasury, mint, recipient,
+    );
+
+    const tx = new Transaction().add(
+      createTransferInstruction(
+        fromATA.address, toATA.address,
+        vault.publicKey, atomicAmount, [], TOKEN_PROGRAM_ID,
+      ),
+    );
+
+    const sig = await sendAndConfirmTransaction(connection, tx, [vault, treasury], { commitment: "confirmed" });
+
+    return { success: true, tx_signature: sig, amount_usdc: amountUsdc, wallet_address: userAddress, is_simulated: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, tx_signature: null, amount_usdc: amountUsdc, wallet_address: userAddress, is_simulated: false, error: message };
+  }
+}
+
 // ── Co-sign USDC transfer from user wallet to escrow ──────────────────────
 
 export interface TransferResult {
