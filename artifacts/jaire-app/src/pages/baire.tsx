@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Volume2, VolumeX, ChevronDown, Keyboard } from "lucide-react";
+import { Send, Volume2, VolumeX, Keyboard, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getUser } from "@/lib/auth";
 import { WalletPanel } from "@/components/wallet-panel";
@@ -18,37 +18,39 @@ async function createConversation(): Promise<number> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title: "JaIre Session" }),
   });
-  const data = await res.json();
-  return data.id;
+  return (await res.json()).id;
 }
 
-const QUICK_PROMPTS = [
-  "What spaces are available now?",
-  "Book me a hot desk for 2 hours",
-  "What's my wallet balance?",
-  "How does billing work?",
+const CHIPS = [
+  "Book me a hot desk now",
+  "What spaces are available?",
+  "Find me a quiet private room",
+  "What's my account balance?",
 ];
 
 type BaireState = "idle" | "listening" | "processing" | "speaking";
+
+function timeGreeting() {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
 
 export default function Baire() {
   const user = getUser();
   const firstName = user?.name?.split(" ")[0] || "there";
 
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "baire",
-      content: `Hey ${firstName}! I'm Baire 😊 Your personal space concierge. I can find you the perfect spot to work, handle your bookings, and answer anything about JaIre. Just tap the button and talk to me, or type below!`,
-    },
-  ]);
-
+  const [messages, setMessages] = useState<Message[]>([]);
   const [baireState, setBaireState] = useState<BaireState>("idle");
   const [isMuted, setIsMuted] = useState(false);
   const [convId, setConvId] = useState<number | null>(null);
   const [walletOpen, setWalletOpen] = useState(false);
   const [showInput, setShowInput] = useState(false);
   const [inputText, setInputText] = useState("");
-  const [showSuggestions, setShowSuggestions] = useState(true);
+  const [interimText, setInterimText] = useState("");
+
+  const isWelcome = messages.length === 0;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -59,15 +61,13 @@ export default function Baire() {
   }, []);
 
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && !isWelcome) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, isWelcome]);
 
   useEffect(() => {
-    if (showInput && inputRef.current) {
-      inputRef.current.focus();
-    }
+    if (showInput && inputRef.current) inputRef.current.focus();
   }, [showInput]);
 
   const speakText = useCallback(
@@ -78,32 +78,26 @@ export default function Baire() {
       }
       window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 0.92;
-      utter.pitch = 1.1;
-      utter.volume = 0.95;
-
+      utter.rate = 0.9;
+      utter.pitch = 1.12;
+      utter.volume = 1;
       const trySetVoice = () => {
         const voices = window.speechSynthesis.getVoices();
-        const preferred = voices.find(
-          (v) =>
+        const preferred =
+          voices.find((v) =>
             v.lang.startsWith("en") &&
-            (v.name.includes("Samantha") ||
-              v.name.includes("Karen") ||
-              v.name.includes("Moira") ||
-              v.name.includes("Tessa") ||
-              v.name.includes("Fiona") ||
-              v.name.toLowerCase().includes("female") ||
+            (v.name.includes("Samantha") || v.name.includes("Karen") ||
+              v.name.includes("Moira") || v.name.includes("Tessa") ||
+              v.name.includes("Fiona") || v.name.toLowerCase().includes("female") ||
               v.name.includes("Google US English Female"))
-        ) ?? voices.find((v) => v.lang.startsWith("en"));
+          ) ?? voices.find((v) => v.lang.startsWith("en"));
         if (preferred) utter.voice = preferred;
       };
-
       if (window.speechSynthesis.getVoices().length > 0) {
         trySetVoice();
       } else {
         window.speechSynthesis.addEventListener("voiceschanged", trySetVoice, { once: true });
       }
-
       utter.onstart = () => setBaireState("speaking");
       utter.onend = () => setBaireState("idle");
       utter.onerror = () => setBaireState("idle");
@@ -115,7 +109,9 @@ export default function Baire() {
   const sendMessage = useCallback(
     async (text: string) => {
       if (!text.trim() || !convId || baireState === "processing") return;
-      setShowSuggestions(false);
+      setShowInput(false);
+      setInputText("");
+      setInterimText("");
 
       setMessages((prev) => [...prev, { role: "user", content: text }]);
       setBaireState("processing");
@@ -132,52 +128,44 @@ export default function Baire() {
             wallet_address: user?.walletAddress,
           }),
         });
-
-        if (!response.body) throw new Error("No response body");
+        if (!response.body) throw new Error("no body");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let fullText = "";
-
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          for (const line of chunk.split("\n")) {
+          for (const line of decoder.decode(value, { stream: true }).split("\n")) {
             if (!line.startsWith("data: ")) continue;
             try {
-              const event = JSON.parse(line.slice(6));
-              if (event.type === "text") {
-                fullText += event.content;
+              const ev = JSON.parse(line.slice(6));
+              if (ev.type === "text") {
+                fullText += ev.content;
                 setMessages((prev) => {
-                  const updated = [...prev];
-                  const idx = updated.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
-                  if (idx !== undefined) updated[idx] = { role: "baire", content: fullText, isStreaming: true };
-                  return updated;
+                  const u = [...prev];
+                  const idx = u.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
+                  if (idx !== undefined) u[idx] = { role: "baire", content: fullText, isStreaming: true };
+                  return u;
                 });
-              } else if (event.type === "done") {
-                const finalText = event.full_response || fullText;
+              } else if (ev.type === "done") {
+                const final = ev.full_response || fullText;
                 setMessages((prev) => {
-                  const updated = [...prev];
-                  const idx = updated.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
-                  if (idx !== undefined) updated[idx] = { role: "baire", content: finalText, isStreaming: false };
-                  return updated;
+                  const u = [...prev];
+                  const idx = u.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
+                  if (idx !== undefined) u[idx] = { role: "baire", content: final, isStreaming: false };
+                  return u;
                 });
-                speakText(finalText);
+                speakText(final);
               }
             } catch {}
           }
         }
       } catch {
         setMessages((prev) => {
-          const updated = [...prev];
-          const idx = updated.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
-          if (idx !== undefined)
-            updated[idx] = {
-              role: "baire",
-              content: "Oops, something went wrong on my end! Give me a second and try again?",
-              isStreaming: false,
-            };
-          return updated;
+          const u = [...prev];
+          const idx = u.map((m, i) => (m.isStreaming ? i : -1)).filter((i) => i !== -1).at(-1);
+          if (idx !== undefined) u[idx] = { role: "baire", content: "Oops — something went wrong. Try again?", isStreaming: false };
+          return u;
         });
         setBaireState("idle");
       } finally {
@@ -195,278 +183,415 @@ export default function Baire() {
     }
     window.speechSynthesis.cancel();
     setBaireState("listening");
+    setInterimText("");
 
     const SR = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-    const recognition = new SR();
-    recognition.lang = "en-US";
-    recognition.continuous = false;
-    recognition.interimResults = false;
-
-    recognition.onend = () => {
-      if (baireState === "listening") setBaireState("idle");
+    const r = new SR();
+    r.lang = "en-US";
+    r.continuous = false;
+    r.interimResults = true;
+    r.onend = () => { if (baireState === "listening") setBaireState("idle"); setInterimText(""); };
+    r.onresult = (e: any) => {
+      const interim = Array.from(e.results).map((res: any) => res[0].transcript).join("");
+      setInterimText(interim);
+      if (e.results[e.results.length - 1].isFinal) {
+        if (interim) sendMessage(interim);
+      }
     };
-    recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results)
-        .map((r: any) => r[0].transcript)
-        .join("");
-      if (transcript) sendMessage(transcript);
-    };
-    recognition.onerror = () => setBaireState("idle");
-    recognitionRef.current = recognition;
-    recognition.start();
+    r.onerror = () => { setBaireState("idle"); setInterimText(""); };
+    recognitionRef.current = r;
+    r.start();
   }, [baireState, sendMessage]);
 
   const stopVoice = useCallback(() => {
     recognitionRef.current?.stop();
     setBaireState("idle");
+    setInterimText("");
   }, []);
 
   const handleOrbPress = () => {
-    if (baireState === "listening") {
-      stopVoice();
-    } else if (baireState === "speaking") {
-      window.speechSynthesis.cancel();
-      setBaireState("idle");
-    } else if (baireState === "idle") {
-      startVoice();
-    }
+    if (baireState === "listening") stopVoice();
+    else if (baireState === "speaking") { window.speechSynthesis.cancel(); setBaireState("idle"); }
+    else if (baireState === "idle") startVoice();
   };
 
   const handleTextSend = (e?: React.FormEvent) => {
     e?.preventDefault();
     const text = inputText.trim();
     if (!text) return;
-    setInputText("");
-    setShowInput(false);
     sendMessage(text);
   };
 
-  const orbLabel =
-    baireState === "listening"
-      ? "Listening… tap to stop"
-      : baireState === "processing"
-      ? "Thinking…"
-      : baireState === "speaking"
-      ? "Tap to stop"
-      : "Tap to speak";
+  const orbSize = isWelcome ? 96 : 72;
 
-  const orbColor =
+  const orbGlow =
     baireState === "listening"
-      ? { from: "hsl(43 100% 50%)", to: "hsl(38 100% 44%)" }
+      ? { bg: "linear-gradient(135deg, hsl(43 100% 50%), hsl(38 100% 44%))", shadow: "0 0 0 10px rgba(255,170,0,0.12), 0 0 0 22px rgba(255,170,0,0.05), 0 0 60px rgba(255,170,0,0.35)" }
       : baireState === "speaking"
-      ? { from: "hsl(262 83% 66%)", to: "hsl(199 93% 60%)" }
+      ? { bg: "linear-gradient(135deg, hsl(262 83% 62%), hsl(199 93% 55%))", shadow: "0 0 0 10px rgba(139,92,246,0.15), 0 0 0 22px rgba(139,92,246,0.06), 0 0 60px rgba(139,92,246,0.35)" }
       : baireState === "processing"
-      ? { from: "rgba(139,92,246,0.4)", to: "rgba(56,189,248,0.4)" }
-      : { from: "rgba(139,92,246,0.25)", to: "rgba(56,189,248,0.2)" };
+      ? { bg: "linear-gradient(135deg, rgba(139,92,246,0.5), rgba(56,189,248,0.4))", shadow: "0 0 30px rgba(139,92,246,0.25)" }
+      : { bg: "linear-gradient(135deg, rgba(139,92,246,0.3), rgba(56,189,248,0.25))", shadow: "0 0 0 1px rgba(139,92,246,0.2), 0 12px 40px rgba(0,0,0,0.5)" };
+
+  const stateLabel =
+    baireState === "listening" ? "Listening…" :
+    baireState === "processing" ? "Thinking…" :
+    baireState === "speaking" ? "Tap to stop" :
+    isWelcome ? "Tap to speak" : "Tap to speak";
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden" style={{ height: "calc(100vh - 4rem)" }}>
-      <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-4 pb-4"
-        style={{ scrollBehavior: "smooth" }}
-      >
-        <div className="max-w-xl mx-auto pt-6 space-y-4">
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={cn(
-                "flex gap-3",
-                msg.role === "user" ? "justify-end" : "justify-start"
-              )}
-            >
-              {msg.role === "baire" && (
-                <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-1"
-                  style={{
-                    background: "linear-gradient(135deg, rgba(139,92,246,0.3) 0%, rgba(56,189,248,0.3) 100%)",
-                    border: "1px solid rgba(139,92,246,0.35)",
-                    color: "hsl(262 83% 76%)",
-                  }}
-                >
-                  B
-                </div>
-              )}
-              <div
-                className={cn(
-                  "px-4 py-3 rounded-2xl text-[15px] leading-relaxed max-w-[80%]",
-                  msg.role === "user" ? "rounded-tr-sm" : "rounded-tl-sm"
-                )}
-                style={
-                  msg.role === "user"
-                    ? { background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)" }
-                    : { background: "rgba(139,92,246,0.09)", border: "1px solid rgba(139,92,246,0.2)" }
-                }
-              >
-                {msg.content || (msg.isStreaming ? null : "…")}
-                {msg.isStreaming && !msg.content && (
-                  <div className="flex items-center gap-1.5 py-1">
-                    {[0, 1, 2].map((j) => (
-                      <div
-                        key={j}
-                        className="w-2 h-2 rounded-full bg-current opacity-40 animate-bounce"
-                        style={{ animationDelay: `${j * 150}ms` }}
-                      />
-                    ))}
-                  </div>
-                )}
-                {msg.isStreaming && msg.content && (
-                  <span className="inline-block w-0.5 h-4 bg-current opacity-60 ml-0.5 animate-pulse align-bottom" />
-                )}
-              </div>
-            </div>
-          ))}
+    <div className="flex-1 flex flex-col relative overflow-hidden" style={{ height: "calc(100vh - 4rem)" }}>
 
-          {showSuggestions && messages.length <= 1 && (
-            <div className="grid grid-cols-2 gap-2 pt-2">
-              {QUICK_PROMPTS.map((p) => (
-                <button
-                  key={p}
-                  onClick={() => sendMessage(p)}
-                  disabled={baireState !== "idle"}
-                  className="text-left px-3 py-2.5 rounded-xl text-sm transition-all hover:bg-white/6 disabled:opacity-40"
-                  style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+      {/* Ambient background glows — always present, shift color with state */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div
+          className="absolute transition-all duration-1000"
+          style={{
+            top: "-20%", left: "50%", transform: "translateX(-50%)",
+            width: "80vw", height: "60vw",
+            background: baireState === "listening"
+              ? "radial-gradient(ellipse, rgba(255,170,0,0.12) 0%, transparent 70%)"
+              : baireState === "speaking"
+              ? "radial-gradient(ellipse, rgba(139,92,246,0.12) 0%, transparent 70%)"
+              : "radial-gradient(ellipse, rgba(139,92,246,0.07) 0%, transparent 70%)",
+            filter: "blur(40px)",
+          }}
+        />
+        <div
+          className="absolute"
+          style={{
+            bottom: "-10%", right: "-10%",
+            width: "50vw", height: "50vw",
+            background: "radial-gradient(ellipse, rgba(255,170,0,0.05) 0%, transparent 70%)",
+            filter: "blur(40px)",
+          }}
+        />
       </div>
 
-      <div
-        className="shrink-0 pb-8 px-4"
-        style={{
-          background: "linear-gradient(to top, rgba(0,0,0,0.5) 0%, transparent 100%)",
-          backdropFilter: "blur(12px)",
-        }}
-      >
-        <div className="max-w-xl mx-auto">
-          {showInput ? (
-            <div className="mb-4">
-              <form onSubmit={handleTextSend} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowInput(false)}
-                  className="w-10 h-10 rounded-xl flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                  style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
-                >
-                  <ChevronDown className="w-4 h-4" />
-                </button>
-                <input
-                  ref={inputRef}
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="Type your message…"
-                  className="flex-1 h-10 px-4 rounded-xl bg-white/5 border border-white/10 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/40 transition-all"
-                  disabled={baireState === "processing"}
-                />
-                <button
-                  type="submit"
-                  disabled={!inputText.trim() || baireState === "processing"}
-                  className="w-10 h-10 rounded-xl flex items-center justify-center transition-all disabled:opacity-30 hover:scale-105 shrink-0"
-                  style={{ background: "rgba(255,170,0,0.15)", color: "#FFAA00", border: "1px solid rgba(255,170,0,0.3)" }}
-                >
-                  <Send className="w-4 h-4" />
-                </button>
-              </form>
-            </div>
-          ) : null}
+      {/* ─── WELCOME STATE ─── */}
+      {isWelcome && (
+        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center relative z-10">
 
-          <div className="flex flex-col items-center gap-3">
+          {/* Greeting hero text */}
+          <div className="mb-10">
+            <p
+              className="text-[13px] font-medium mb-3 tracking-widest uppercase"
+              style={{ color: "rgba(255,170,0,0.6)" }}
+            >
+              {timeGreeting()}
+            </p>
+            <h1
+              className="font-bold leading-tight mb-4"
+              style={{
+                fontSize: "clamp(2rem, 6vw, 3.2rem)",
+                background: "linear-gradient(135deg, #ffffff 0%, rgba(255,255,255,0.75) 100%)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}
+            >
+              Hey {firstName},
+            </h1>
+            <h2
+              className="font-bold leading-snug mb-5"
+              style={{
+                fontSize: "clamp(1.5rem, 5vw, 2.4rem)",
+                background: "linear-gradient(135deg, hsl(43 100% 52%) 0%, hsl(262 83% 72%) 60%, hsl(199 93% 65%) 100%)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}
+            >
+              What space are you<br />looking to book today?
+            </h2>
+            <p className="text-[15px] text-muted-foreground max-w-xs mx-auto leading-relaxed">
+              Give me a voice command and I'll book it right away.
+            </p>
+          </div>
+
+          {/* Orb */}
+          <div className="flex flex-col items-center gap-4 mb-10">
             {baireState === "listening" && (
-              <div className="flex items-center gap-1 h-6">
-                {Array.from({ length: 11 }).map((_, i) => (
+              <div className="flex items-center gap-[3px] h-7">
+                {Array.from({ length: 13 }).map((_, i) => (
                   <div
                     key={i}
-                    className="w-0.5 rounded-full bg-primary"
+                    className="rounded-full bg-primary"
                     style={{
-                      height: `${6 + Math.sin((i / 10) * Math.PI) * 18}px`,
-                      animation: `baire-wave ${0.5 + (i % 3) * 0.15}s ease-in-out infinite alternate`,
-                      animationDelay: `${i * 60}ms`,
-                      opacity: 0.7 + (i % 2) * 0.3,
+                      width: "3px",
+                      height: `${8 + Math.abs(Math.sin((i / 12) * Math.PI * 2)) * 20}px`,
+                      animation: `baire-wave ${0.4 + (i % 4) * 0.1}s ease-in-out infinite alternate`,
+                      animationDelay: `${i * 50}ms`,
+                      opacity: 0.6 + (i % 3) * 0.2,
                     }}
                   />
                 ))}
               </div>
             )}
 
+            {interimText && baireState === "listening" && (
+              <p className="text-sm text-primary/80 italic max-w-xs text-center">"{interimText}"</p>
+            )}
+
             <button
               onClick={handleOrbPress}
               disabled={baireState === "processing"}
               className={cn(
-                "relative w-20 h-20 rounded-full flex items-center justify-center transition-all duration-500 select-none",
+                "relative rounded-full flex items-center justify-center transition-all duration-500 select-none",
                 baireState === "idle" && "hover:scale-105 active:scale-95",
                 baireState === "listening" && "scale-110",
-                baireState === "processing" && "cursor-wait"
               )}
               style={{
-                background: `radial-gradient(circle at 35% 35%, ${orbColor.from}, ${orbColor.to})`,
-                boxShadow:
-                  baireState === "listening"
-                    ? `0 0 0 8px rgba(255,170,0,0.15), 0 0 0 16px rgba(255,170,0,0.06), 0 0 40px rgba(255,170,0,0.3)`
-                    : baireState === "speaking"
-                    ? `0 0 0 8px rgba(139,92,246,0.15), 0 0 0 16px rgba(139,92,246,0.06), 0 0 40px rgba(139,92,246,0.3)`
-                    : baireState === "processing"
-                    ? `0 0 0 8px rgba(139,92,246,0.1), 0 0 20px rgba(139,92,246,0.2)`
-                    : `0 0 0 1px rgba(139,92,246,0.2), 0 8px 32px rgba(0,0,0,0.4)`,
+                width: orbSize, height: orbSize,
+                background: orbGlow.bg,
+                boxShadow: orbGlow.shadow,
               }}
             >
               {baireState === "processing" ? (
-                <div
-                  className="w-8 h-8 rounded-full border-2 animate-spin"
-                  style={{ borderColor: "rgba(255,255,255,0.15)", borderTopColor: "rgba(255,255,255,0.8)" }}
-                />
+                <div className="w-9 h-9 rounded-full border-[2.5px] animate-spin"
+                  style={{ borderColor: "rgba(255,255,255,0.15)", borderTopColor: "rgba(255,255,255,0.9)" }} />
               ) : (
-                <div className="flex flex-col items-center gap-0.5">
-                  <span className="text-xl font-bold" style={{ color: baireState === "listening" ? "hsl(220 40% 8%)" : "white" }}>
+                <div className="flex flex-col items-center gap-1">
+                  <span
+                    className="font-bold text-2xl"
+                    style={{ color: baireState === "listening" ? "hsl(220 40% 8%)" : "white", letterSpacing: "-0.02em" }}
+                  >
                     B
                   </span>
                   {baireState === "speaking" && (
                     <div className="flex gap-0.5">
-                      {[0, 1, 2].map((j) => (
-                        <div
-                          key={j}
-                          className="w-0.5 h-2 rounded-full bg-white/70 animate-bounce"
-                          style={{ animationDelay: `${j * 100}ms` }}
-                        />
+                      {[0, 1, 2, 3].map((j) => (
+                        <div key={j} className="w-0.5 h-2 rounded-full bg-white/60 animate-bounce"
+                          style={{ animationDelay: `${j * 90}ms` }} />
                       ))}
                     </div>
                   )}
                 </div>
               )}
-
               {baireState === "listening" && (
-                <div className="absolute inset-0 rounded-full border-2 border-primary/30 animate-ping" />
+                <div className="absolute inset-0 rounded-full border-2 border-primary/25 animate-ping" />
               )}
             </button>
 
-            <p className="text-xs text-muted-foreground">{orbLabel}</p>
+            <p className="text-[13px] text-muted-foreground">{stateLabel}</p>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-5">
               <button
-                onClick={() => {
-                  setIsMuted(!isMuted);
-                  if (!isMuted) window.speechSynthesis.cancel();
-                }}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis.cancel(); }}
+                className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors"
               >
                 {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
                 {isMuted ? "Unmute" : "Mute"}
               </button>
-
               <button
                 onClick={() => setShowInput((v) => !v)}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors"
               >
                 <Keyboard className="w-3.5 h-3.5" />
-                Type
+                Type instead
               </button>
             </div>
           </div>
+
+          {/* Quick chips */}
+          <div className="flex flex-wrap gap-2 justify-center max-w-sm">
+            {CHIPS.map((chip) => (
+              <button
+                key={chip}
+                onClick={() => sendMessage(chip)}
+                disabled={baireState !== "idle"}
+                className="px-4 py-2 rounded-full text-[13px] font-medium transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  backdropFilter: "blur(12px)",
+                }}
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ─── CONVERSATION STATE ─── */}
+      {!isWelcome && (
+        <>
+          {/* Compact header */}
+          <div
+            className="shrink-0 px-6 pt-5 pb-4 flex items-center gap-3"
+            style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}
+          >
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0"
+              style={{
+                background: orbGlow.bg,
+                boxShadow: baireState !== "idle" ? orbGlow.shadow : "none",
+                color: baireState === "listening" ? "hsl(220 40% 8%)" : "white",
+                transition: "all 0.4s ease",
+              }}
+            >
+              B
+            </div>
+            <div>
+              <div className="font-semibold text-sm leading-none">Baire</div>
+              <div className="text-[11px] text-muted-foreground mt-0.5">
+                {baireState === "listening" ? "Listening…" :
+                 baireState === "processing" ? "Thinking…" :
+                 baireState === "speaking" ? "Speaking…" : "Online"}
+              </div>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4 relative z-10" style={{ scrollBehavior: "smooth" }}>
+            <div className="max-w-2xl mx-auto space-y-4">
+              {messages.map((msg, i) => (
+                <div key={i} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
+                  {msg.role === "baire" && (
+                    <div
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-1"
+                      style={{
+                        background: "linear-gradient(135deg, rgba(139,92,246,0.3), rgba(56,189,248,0.3))",
+                        border: "1px solid rgba(139,92,246,0.3)",
+                        color: "hsl(262 83% 76%)",
+                      }}
+                    >
+                      B
+                    </div>
+                  )}
+                  <div
+                    className={cn("px-4 py-3 rounded-2xl text-[15px] leading-relaxed max-w-[82%]",
+                      msg.role === "user" ? "rounded-tr-sm" : "rounded-tl-sm")}
+                    style={msg.role === "user"
+                      ? { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.09)" }
+                      : { background: "rgba(139,92,246,0.09)", border: "1px solid rgba(139,92,246,0.2)" }}
+                  >
+                    {msg.content || (msg.isStreaming ? null : "…")}
+                    {msg.isStreaming && !msg.content && (
+                      <div className="flex gap-1.5 py-1">
+                        {[0, 1, 2].map((j) => (
+                          <div key={j} className="w-2 h-2 rounded-full bg-current opacity-40 animate-bounce"
+                            style={{ animationDelay: `${j * 150}ms` }} />
+                        ))}
+                      </div>
+                    )}
+                    {msg.isStreaming && msg.content && (
+                      <span className="inline-block w-0.5 h-4 bg-current opacity-60 ml-0.5 animate-pulse align-bottom" />
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Bottom controls */}
+          <div className="shrink-0 px-4 pb-7 pt-3 relative z-10"
+            style={{ background: "linear-gradient(to top, rgba(0,0,0,0.6) 0%, transparent 100%)", backdropFilter: "blur(16px)" }}>
+            <div className="max-w-2xl mx-auto">
+              {showInput ? (
+                <form onSubmit={handleTextSend} className="flex items-center gap-2 mb-3">
+                  <input
+                    ref={inputRef}
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="Type a message…"
+                    className="flex-1 h-11 px-4 rounded-2xl text-sm placeholder:text-muted-foreground focus:outline-none transition-all"
+                    style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "white" }}
+                    disabled={baireState === "processing"}
+                  />
+                  <button type="submit" disabled={!inputText.trim() || baireState === "processing"}
+                    className="w-11 h-11 rounded-2xl flex items-center justify-center transition-all disabled:opacity-30"
+                    style={{ background: "rgba(255,170,0,0.15)", color: "#FFAA00", border: "1px solid rgba(255,170,0,0.25)" }}>
+                    <Send className="w-4 h-4" />
+                  </button>
+                  <button type="button" onClick={() => setShowInput(false)}
+                    className="w-11 h-11 rounded-2xl flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                    style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
+                    <X className="w-4 h-4" />
+                  </button>
+                </form>
+              ) : interimText && baireState === "listening" ? (
+                <p className="text-sm text-primary/80 italic text-center mb-3">"{interimText}"</p>
+              ) : null}
+
+              <div className="flex items-center justify-center gap-5">
+                {baireState === "listening" && (
+                  <div className="flex items-center gap-[3px]">
+                    {Array.from({ length: 9 }).map((_, i) => (
+                      <div key={i} className="rounded-full bg-primary"
+                        style={{
+                          width: "3px",
+                          height: `${6 + Math.abs(Math.sin((i / 8) * Math.PI * 2)) * 16}px`,
+                          animation: `baire-wave ${0.4 + (i % 3) * 0.12}s ease-in-out infinite alternate`,
+                          animationDelay: `${i * 55}ms`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleOrbPress}
+                  disabled={baireState === "processing"}
+                  className={cn("relative rounded-full flex items-center justify-center transition-all duration-400 select-none",
+                    baireState === "idle" && "hover:scale-105 active:scale-95",
+                    baireState === "listening" && "scale-110")}
+                  style={{ width: orbSize, height: orbSize, background: orbGlow.bg, boxShadow: orbGlow.shadow }}
+                >
+                  {baireState === "processing" ? (
+                    <div className="w-7 h-7 rounded-full border-2 animate-spin"
+                      style={{ borderColor: "rgba(255,255,255,0.15)", borderTopColor: "rgba(255,255,255,0.9)" }} />
+                  ) : (
+                    <span className="font-bold text-lg"
+                      style={{ color: baireState === "listening" ? "hsl(220 40% 8%)" : "white" }}>
+                      B
+                    </span>
+                  )}
+                  {baireState === "listening" && (
+                    <div className="absolute inset-0 rounded-full border-2 border-primary/25 animate-ping" />
+                  )}
+                </button>
+
+                <div className="flex flex-col gap-1.5 items-center">
+                  <button onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis.cancel(); }}
+                    className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
+                    {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                    {isMuted ? "Unmute" : "Mute"}
+                  </button>
+                  <button onClick={() => setShowInput((v) => !v)}
+                    className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
+                    <Keyboard className="w-3 h-3" />
+                    Type
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-center text-[11px] text-muted-foreground mt-3">{stateLabel}</p>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Shared text input for welcome state */}
+      {isWelcome && showInput && (
+        <div className="shrink-0 px-4 pb-6 relative z-20">
+          <form onSubmit={handleTextSend} className="max-w-sm mx-auto flex items-center gap-2">
+            <input
+              ref={inputRef}
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              placeholder="Type a message to Baire…"
+              className="flex-1 h-12 px-4 rounded-2xl text-sm focus:outline-none transition-all"
+              style={{ background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.12)", color: "white" }}
+              disabled={baireState === "processing"}
+            />
+            <button type="submit" disabled={!inputText.trim() || baireState === "processing"}
+              className="w-12 h-12 rounded-2xl flex items-center justify-center disabled:opacity-30 transition-all hover:scale-105"
+              style={{ background: "linear-gradient(135deg, hsl(43 100% 50%), hsl(38 100% 44%))", color: "hsl(220 40% 5%)" }}>
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
+        </div>
+      )}
 
       {walletOpen && <WalletPanel onClose={() => setWalletOpen(false)} />}
     </div>
