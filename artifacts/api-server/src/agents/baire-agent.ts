@@ -40,10 +40,10 @@ Current NGN/USDC rate: 1600 NGN per USDC (internal JaIre rate)`;
 
 function getBaireModel(): ChatOpenAI {
   return new ChatOpenAI({
-    model: "gpt-5.2",
+    model: "llama-3.3-70b-versatile",
     configuration: {
-      baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-      apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
+      baseURL: "https://api.groq.com/openai/v1",
+      apiKey: process.env["GROQ_AI_API_KEY"],
     },
     maxTokens: 512,
     streaming: false,
@@ -106,10 +106,10 @@ export async function* runBaireAgentStream(
   userContext?: UserContext
 ): AsyncGenerator<string> {
   const model = new ChatOpenAI({
-    model: "gpt-5.2",
+    model: "llama-3.3-70b-versatile",
     configuration: {
-      baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-      apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
+      baseURL: "https://api.groq.com/openai/v1",
+      apiKey: process.env["GROQ_AI_API_KEY"],
     },
     maxTokens: 512,
     streaming: true,

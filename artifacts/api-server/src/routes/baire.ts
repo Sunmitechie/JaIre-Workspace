@@ -5,10 +5,9 @@ import { conversations, messages } from "@workspace/db/schema";
 import { eq, asc } from "drizzle-orm";
 import { runBaireAgent, runBaireAgentStream, UserContext } from "../agents/baire-agent.js";
 import {
-  speechToText,
-  ensureCompatibleFormat,
-  textToSpeechStream,
-} from "@workspace/integrations-openai-ai-server/audio";
+  elevenLabsSpeechToText,
+  elevenLabsTextToSpeechStream,
+} from "../lib/elevenlabs.js";
 
 const router = Router();
 
@@ -122,8 +121,7 @@ router.post(
     try {
       sendEvent(res, { type: "status", message: "Transcribing your voice..." });
 
-      const { buffer: wavBuffer, format } = await ensureCompatibleFormat(file.buffer);
-      const userTranscript = await speechToText(wavBuffer, format);
+      const userTranscript = await elevenLabsSpeechToText(file.buffer, file.mimetype || "audio/webm");
 
       sendEvent(res, { type: "user_transcript", content: userTranscript });
       sendEvent(res, { type: "status", message: "Baire is thinking..." });
@@ -134,10 +132,8 @@ router.post(
       sendEvent(res, { type: "agent_text", content: agentResponse });
       sendEvent(res, { type: "status", message: "Generating voice response..." });
 
-      const audioStream = await textToSpeechStream(agentResponse, "nova");
-
-      for await (const chunk of audioStream) {
-        sendEvent(res, { type: "audio_chunk", data: chunk });
+      for await (const chunk of elevenLabsTextToSpeechStream(agentResponse)) {
+        sendEvent(res, { type: "audio_chunk", data: Array.from(chunk) });
       }
 
       await db.insert(messages).values([
@@ -163,8 +159,7 @@ router.post("/baire/voice-quick", upload.single("audio"), async (req, res) => {
   try {
     sendEvent(res, { type: "status", message: "Transcribing..." });
 
-    const { buffer: wavBuffer, format } = await ensureCompatibleFormat(file.buffer);
-    const userTranscript = await speechToText(wavBuffer, format);
+    const userTranscript = await elevenLabsSpeechToText(file.buffer, file.mimetype || "audio/webm");
 
     sendEvent(res, { type: "user_transcript", content: userTranscript });
     sendEvent(res, { type: "status", message: "Baire is thinking..." });
@@ -174,10 +169,8 @@ router.post("/baire/voice-quick", upload.single("audio"), async (req, res) => {
     sendEvent(res, { type: "agent_text", content: agentResponse });
     sendEvent(res, { type: "status", message: "Generating voice response..." });
 
-    const audioStream = await textToSpeechStream(agentResponse, "nova");
-
-    for await (const chunk of audioStream) {
-      sendEvent(res, { type: "audio_chunk", data: chunk });
+    for await (const chunk of elevenLabsTextToSpeechStream(agentResponse)) {
+      sendEvent(res, { type: "audio_chunk", data: Array.from(chunk) });
     }
 
     sendEvent(res, { type: "done" });
@@ -185,6 +178,24 @@ router.post("/baire/voice-quick", upload.single("audio"), async (req, res) => {
   } catch (err: any) {
     sendEvent(res, { type: "error", message: err?.message ?? "Error" });
     res.end();
+  }
+});
+
+router.post("/baire/tts", async (req, res) => {
+  const { text } = req.body as { text?: string };
+  if (!text?.trim()) return res.status(400).json({ error: "text is required" });
+
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of elevenLabsTextToSpeechStream(text)) {
+      chunks.push(chunk);
+    }
+    const audioBuffer = Buffer.concat(chunks);
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", audioBuffer.length);
+    res.send(audioBuffer);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? "TTS failed" });
   }
 });
 
