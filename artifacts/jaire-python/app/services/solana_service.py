@@ -22,7 +22,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-USDC_MINT_DEVNET = Pubkey.from_string("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+USDC_MINT_DEVNET = Pubkey.from_string("7egxbd4d6tsPsRKJU8v74PKFnis4YKhbQgKX9HDCpR8S")
 TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
 SYSVAR_RENT_PUBKEY = Pubkey.from_string("SysvarRent111111111111111111111111111111111")
