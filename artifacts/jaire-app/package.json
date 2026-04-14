@@ -78,6 +78,7 @@
     "@toruslabs/tss-dkls-lib": "^4.1.0",
     "@toruslabs/tss-frost-lib": "^1.0.0",
     "@web3auth/mpc-core-kit": "3.5.0",
+    "bn.js": "^5.2.3",
     "html5-qrcode": "^2.3.8",
     "qrcode.react": "^4.2.0",
     "viem": "^2.47.11",
