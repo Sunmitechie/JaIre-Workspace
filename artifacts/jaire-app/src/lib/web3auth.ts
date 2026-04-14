@@ -1,17 +1,13 @@
-import {
-  Web3AuthMPCCoreKit,
-  WEB3AUTH_NETWORK,
-  COREKIT_STATUS,
-  generateFactorKey,
-} from "@web3auth/mpc-core-kit";
-import { tssLib } from "@toruslabs/tss-dkls-lib";
-import BN from "bn.js";
+/**
+ * web3auth.ts — Simplified authentication layer
+ *
+ * Strategy: Google Identity Services (GSI) gives us the Google ID token directly
+ * in the browser (no redirect dance). That token is passed to the MPC sidecar
+ * which handles all on-chain key management. The frontend never touches the
+ * Web3Auth MPC Core Kit SDK at runtime — it only needs the Google JWT.
+ */
 
-declare const __WEB3AUTH_CLIENT_ID__: string;
 declare const __GOOGLE_CLIENT_ID__: string;
-declare const __WEB3AUTH_GOOGLE_VERIFIER__: string;
-
-const DEVICE_FACTOR_KEY = "jaire_mpc_device_factor";
 
 export interface Web3AuthUser {
   idToken: string;
@@ -23,203 +19,185 @@ export interface Web3AuthUser {
 
 export type SocialProvider = "google" | "twitter" | "apple";
 
-let _instance: Web3AuthMPCCoreKit | null = null;
-let _initPromise: Promise<Web3AuthMPCCoreKit> | null = null;
+// --------------------------------------------------------------------------
+// Google Identity Services loader
+// --------------------------------------------------------------------------
 
-// The redirect lands on /login, so baseUrl must be origin and redirectPathName "login".
-const BASE_URL_PATH = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
+let _gsiReady = false;
 
-function buildInstance(): Web3AuthMPCCoreKit {
-  return new Web3AuthMPCCoreKit({
-    web3AuthClientId: __WEB3AUTH_CLIENT_ID__,
-    web3AuthNetwork: WEB3AUTH_NETWORK.DEVNET,
-    tssLib,
-    storage: window.localStorage,
-    uxMode: "redirect",
-    baseUrl: `${window.location.origin}${BASE_URL_PATH}`,
-    redirectPathName: "login",
+function loadGSI(): Promise<void> {
+  if (_gsiReady || (window as any).google?.accounts?.id) {
+    _gsiReady = true;
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.async = true;
+    s.onload = () => { _gsiReady = true; resolve(); };
+    s.onerror = () => reject(new Error("Failed to load Google Sign-In script. Check your internet connection."));
+    document.head.appendChild(s);
   });
 }
 
-export function initWeb3Auth(): Promise<Web3AuthMPCCoreKit> {
-  if (_initPromise) return _initPromise;
-  _instance = buildInstance();
-  _initPromise = _instance
-    .init()
-    .then(() => _instance!)
-    .catch((err) => {
-      console.error("[web3auth] init failed:", err);
-      _instance = null;
-      _initPromise = null;
-      throw err;
+/**
+ * Prompt the Google Identity Services dialog.
+ * Resolves with the raw Google ID token (a JWT) when the user completes sign-in.
+ */
+function promptGoogleSignIn(): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const google = (window as any).google;
+
+    google.accounts.id.initialize({
+      client_id: __GOOGLE_CLIENT_ID__,
+      callback: (response: { credential?: string; error?: string }) => {
+        if (response.credential) {
+          resolve(response.credential);
+        } else {
+          reject(new Error(response.error ?? "Google sign-in was cancelled or failed."));
+        }
+      },
+      auto_select: false,
+      cancel_on_tap_outside: true,
+      use_fedcm_for_prompt: false,
     });
-  return _initPromise;
+
+    // Attempt One Tap — if unavailable, click the hidden fallback button.
+    google.accounts.id.prompt((notification: any) => {
+      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+        const container = document.getElementById("__gsi_btn_container__");
+        if (container) {
+          google.accounts.id.renderButton(container, {
+            type: "standard",
+            theme: "outline",
+            size: "large",
+          });
+          // Programmatically trigger the rendered button
+          const btn = container.querySelector("div[role='button']") as HTMLElement | null;
+          if (btn) {
+            btn.click();
+          } else {
+            // Last resort: poll briefly until the button is rendered
+            let attempts = 0;
+            const poll = setInterval(() => {
+              const b = container.querySelector("div[role='button']") as HTMLElement | null;
+              if (b) { clearInterval(poll); b.click(); return; }
+              if (++attempts > 20) {
+                clearInterval(poll);
+                reject(new Error(
+                  "Google sign-in prompt unavailable. " +
+                  "Try opening the app in a new browser tab."
+                ));
+              }
+            }, 100);
+          }
+        } else {
+          reject(new Error(
+            "Google sign-in prompt could not be displayed. " +
+            "Try opening the app in a new browser tab."
+          ));
+        }
+      }
+    });
+  });
 }
 
 // --------------------------------------------------------------------------
-// OAuth redirect helpers
+// Public API
 // --------------------------------------------------------------------------
 
-/** Returns true when the current URL looks like a post-OAuth callback. */
-export function hasOAuthRedirectResult(): boolean {
-  const { hash, search } = window.location;
-  return (
-    hash.includes("state") ||
-    hash.includes("b64Params") ||
-    search.includes("state=") ||
-    search.includes("code=")
-  );
+/**
+ * Kept for callers that used the old Web3Auth MPC Core Kit init.
+ * Now a no-op — the sidecar handles all key management.
+ */
+export async function initWeb3Auth(): Promise<void> {
+  // No-op — we no longer run the MPC Core Kit in the browser.
 }
 
 /**
- * Process the OAuth redirect result.
- * Handles:
- *   - Normal first-time login (REQUIRED_SHARE → auto-creates device factor)
- *   - Returning user whose device factor is still in localStorage
- *   - Returning user who lost their device factor (re-generates it)
+ * Sign in with a social provider.
+ * Google: uses GSI One Tap / popup — no page redirect required.
  */
-export async function handleOAuthRedirect(): Promise<Web3AuthUser | null> {
-  // kit.init() already calls handleRedirectResult() internally when it detects
-  // "#state" or "#access_token" in the URL hash (redirect mode). Calling it again
-  // after init() consumes the state and throws "Unsupported method type". So we
-  // only call it once here if init() did NOT already process it (status is still
-  // INITIALIZED, meaning init() ran but saw no redirect in the hash).
-  const kit = await initWeb3Auth();
-
-  console.log("[web3auth] kit.status after init:", kit.status);
-
-  // ① If init() didn't process the redirect automatically (e.g. params in query
-  //    string rather than hash), do it now exactly once.
-  if (
-    kit.status !== COREKIT_STATUS.LOGGED_IN &&
-    kit.status !== COREKIT_STATUS.REQUIRED_SHARE
-  ) {
-    try {
-      await kit.handleRedirectResult();
-      console.log("[web3auth] kit.status after handleRedirectResult:", kit.status);
-    } catch (err: any) {
-      const msg = err?.message || String(err) || "handleRedirectResult failed";
-      console.error("[web3auth] handleRedirectResult failed:", msg);
-      throw new Error(msg);
-    }
-  }
-
-  // ② If a second factor is needed, create / restore the device factor.
-  if (kit.status === COREKIT_STATUS.REQUIRED_SHARE) {
-    try {
-      await ensureDeviceFactor(kit);
-    } catch (err: any) {
-      const msg = err?.message || String(err) || "ensureDeviceFactor failed";
-      console.error("[web3auth] ensureDeviceFactor failed:", msg);
-      throw new Error(msg);
-    }
-  }
-
-  // ③ Should be LOGGED_IN by now.
-  if (kit.status !== COREKIT_STATUS.LOGGED_IN) {
-    const msg = `Unexpected status after factor setup: ${kit.status}`;
-    console.error("[web3auth]", msg);
-    throw new Error(msg);
-  }
-
-  return extractUserInfo(kit);
-}
-
-/**
- * Ensure the device factor exists.
- * - If we have a stored hex key → try inputFactorKey
- * - Otherwise generate a brand-new device factor via enableMFA
- */
-async function ensureDeviceFactor(kit: Web3AuthMPCCoreKit): Promise<void> {
-  const stored = localStorage.getItem(DEVICE_FACTOR_KEY);
-
-  if (stored) {
-    // Attempt to restore the stored device factor
-    try {
-      await kit.inputFactorKey(new BN(stored, "hex"));
-      console.log("[web3auth] restored existing device factor");
-      return;
-    } catch (err) {
-      console.warn("[web3auth] stored device factor invalid, regenerating…", err);
-      localStorage.removeItem(DEVICE_FACTOR_KEY);
-    }
-  }
-
-  // Generate a new device factor (for first-time users or factor loss)
-  console.log("[web3auth] generating new device factor via enableMFA…");
-  const factorKey = generateFactorKey();
-  const keyHex = factorKey.private.toString("hex");
-  localStorage.setItem(DEVICE_FACTOR_KEY, keyHex);
-
-  // enableMFA registers the factor with the Web3Auth nodes.
-  await (kit as any).enableMFA({ factorKey: factorKey.private });
-}
-
-/**
- * Trigger the Google OAuth redirect — page navigates away.
- */
-export async function loginWithSocial(provider: SocialProvider): Promise<void> {
+export async function loginWithSocial(provider: SocialProvider): Promise<Web3AuthUser> {
   if (provider !== "google") {
     throw new Error(
       `${provider === "twitter" ? "X (Twitter)" : "Apple"} sign-in is coming soon.`
     );
   }
-  const kit = await initWeb3Auth();
-  await kit.loginWithOAuth({
-    subVerifierDetails: {
-      typeOfLogin: "google",
-      verifier: __WEB3AUTH_GOOGLE_VERIFIER__,
-      clientId: __GOOGLE_CLIENT_ID__,
-    },
-  });
-  // ^ This redirects the page — code below is never reached.
+
+  await loadGSI();
+  const idToken = await promptGoogleSignIn();
+  const claims = decodeJwtPayload(idToken);
+
+  return {
+    idToken,
+    email: claims.email ?? "",
+    name: claims.name ?? "",
+    profileImage: claims.picture ?? "",
+    verifierId: claims.sub ?? "",
+  };
 }
 
 /**
- * Return the currently authenticated user (session persisted in localStorage).
+ * Returns the active user from localStorage (saved by auth.ts on previous login).
+ * Kept for backward compat — always resolves, never throws.
  */
 export async function getConnectedUser(): Promise<Web3AuthUser | null> {
   try {
-    const kit = await initWeb3Auth();
-    if (kit.status !== COREKIT_STATUS.LOGGED_IN) return null;
-    return extractUserInfo(kit);
+    // Dynamically import to avoid circular deps
+    const { getUser, isLoggedIn } = await import("./auth");
+    if (!isLoggedIn()) return null;
+    const u = getUser();
+    if (!u) return null;
+    return {
+      idToken: u.idToken ?? "",
+      email: u.email ?? "",
+      name: u.name ?? "",
+      profileImage: u.avatar ?? "",
+      verifierId: u.id ?? "",
+    };
   } catch {
     return null;
   }
 }
 
+/** Kept for backward compat — no longer uses redirect flow. */
+export function hasOAuthRedirectResult(): boolean {
+  return false;
+}
+
+/** Kept for backward compat — no longer uses redirect flow. */
+export async function handleOAuthRedirect(): Promise<Web3AuthUser | null> {
+  return null;
+}
+
+/** Returns the stored Google ID token from the last session. */
 export async function getWeb3AuthJWT(): Promise<string> {
   try {
-    const kit = await initWeb3Auth();
-    if (kit.status !== COREKIT_STATUS.LOGGED_IN) throw new Error("not logged in");
-    const result = await (kit as any).authenticateUser?.();
-    if (result?.idToken) return result.idToken as string;
-  } catch { /* fallthrough */ }
-  try {
-    const kit = await initWeb3Auth();
-    const info = kit.getUserInfo() as Record<string, unknown>;
-    return (info.idToken as string) || (info.oAuthIdToken as string) || "";
+    const { getUser } = await import("./auth");
+    return getUser()?.idToken ?? "";
   } catch {
     return "";
   }
 }
 
 export async function logoutWeb3Auth(): Promise<void> {
-  if (_instance) {
-    try { await _instance.logout(); } catch { /* non-fatal */ }
-    _instance = null;
-    _initPromise = null;
-  }
+  try {
+    const google = (window as any).google;
+    google?.accounts?.id?.disableAutoSelect?.();
+  } catch { /* non-fatal */ }
 }
 
-function extractUserInfo(kit: Web3AuthMPCCoreKit): Web3AuthUser {
-  const info = kit.getUserInfo() as Record<string, unknown>;
-  return {
-    idToken: (info.idToken as string) ?? "",
-    email: (info.email as string) ?? "",
-    name: (info.name as string) ?? "",
-    profileImage:
-      (info.profileImage as string) ?? (info.profilePicture as string) ?? "",
-    verifierId: (info.verifierId as string) ?? (info.sub as string) ?? "",
-  };
+// --------------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------------
+
+function decodeJwtPayload(token: string): Record<string, string> {
+  try {
+    const [, payload] = token.split(".");
+    const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(padded));
+  } catch {
+    return {};
+  }
 }

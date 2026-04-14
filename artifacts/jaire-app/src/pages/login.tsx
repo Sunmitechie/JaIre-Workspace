@@ -1,13 +1,11 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { saveUser, isLoggedIn } from "@/lib/auth";
+import { saveUser } from "@/lib/auth";
 import { Particles } from "@/components/particles";
 import {
   initWeb3Auth,
   getConnectedUser,
   loginWithSocial,
-  hasOAuthRedirectResult,
-  handleOAuthRedirect,
   type SocialProvider,
 } from "@/lib/web3auth";
 
@@ -46,34 +44,25 @@ const SOCIAL_PROVIDERS: { id: SocialProvider; label: string; icon: React.ReactNo
   },
 ];
 
-type Step = "checking" | "choose" | "redirecting" | "wallet" | "done";
+type Step = "checking" | "choose" | "signing-in" | "wallet" | "done";
 
 export default function Login() {
   const [, setLocation] = useLocation();
   const [step, setStep] = useState<Step>("checking");
-  const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       try {
+        // Warm up the kit (no redirect processing)
         await initWeb3Auth();
         if (cancelled) return;
 
-        let user = null;
-
-        if (hasOAuthRedirectResult()) {
-          setStep("wallet");
-          setStatusMsg("Completing sign-in…");
-          user = await handleOAuthRedirect(); // throws on failure
-        } else {
-          user = await getConnectedUser();
-        }
-
+        // Check for an existing session
+        const user = await getConnectedUser();
         if (cancelled) return;
 
         if (user) {
@@ -88,7 +77,6 @@ export default function Login() {
         }
       }
     })();
-
     return () => { cancelled = true; };
   }, []);
 
@@ -123,7 +111,7 @@ export default function Login() {
         resolvedEmail = data.email || email;
         resolvedName = data.name || name;
       }
-    } catch { /* non-fatal */ }
+    } catch { /* non-fatal — wallet setup continues in background */ }
 
     setStatusMsg("Almost ready!");
     await delay(400);
@@ -144,7 +132,6 @@ export default function Login() {
     });
 
     setStep("done");
-
     setLocation("/baire");
     await delay(200);
     if (window.location.pathname.includes("/login")) {
@@ -160,18 +147,20 @@ export default function Login() {
       return;
     }
     if (step !== "choose") return;
-    setActiveProvider(provider);
-    setStep("redirecting");
-    setStatusMsg("Connecting to Google…");
+    setStep("signing-in");
+    setStatusMsg("Waiting for Google sign-in…");
     setError(null);
     setDebugInfo(null);
     try {
-      await loginWithSocial(provider);
-      // Page navigates away — this code is unreachable in normal flow
+      const user = await loginWithSocial("google");
+      await finishLogin(user.idToken, user.email, user.name, user.profileImage ?? "");
     } catch (err: any) {
-      setError(err?.message || "Sign-in failed. Please try again.");
+      const msg = err?.message || String(err);
+      setError(msg.includes("cancelled") || msg.includes("closed")
+        ? "Sign-in was cancelled. Please try again."
+        : "Google sign-in failed. Please try again.");
+      setDebugInfo(msg);
       setStep("choose");
-      setActiveProvider(null);
     }
   };
 
@@ -181,6 +170,13 @@ export default function Login() {
     <div className="min-h-screen bg-background flex items-center justify-center relative overflow-hidden">
       <Particles count={50} />
       <div className="absolute inset-0 bg-gradient-radial from-[rgba(255,170,0,0.04)] via-transparent to-transparent pointer-events-none" />
+
+      {/* Hidden GSI button container for One Tap fallback */}
+      <div
+        id="__gsi_btn_container__"
+        style={{ position: "fixed", bottom: 0, right: 0, opacity: 0, pointerEvents: "none", zIndex: -1 }}
+        aria-hidden="true"
+      />
 
       <div
         className="relative z-10 w-full max-w-md mx-auto px-6"
@@ -230,16 +226,16 @@ export default function Login() {
                 <p className="font-semibold text-lg mb-1">
                   {step === "checking"
                     ? "Checking your session…"
-                    : step === "redirecting"
-                    ? "Redirecting to Google…"
+                    : step === "signing-in"
+                    ? "Waiting for Google…"
                     : "Setting up your account"}
                 </p>
                 {statusMsg && (
                   <p className="text-muted-foreground text-sm" key={statusMsg}>{statusMsg}</p>
                 )}
-                {step === "redirecting" && (
+                {step === "signing-in" && (
                   <p className="text-xs text-muted-foreground/60 mt-2">
-                    You'll be redirected to complete sign-in, then brought back here.
+                    A Google sign-in prompt will appear. Complete it to continue.
                   </p>
                 )}
               </div>
@@ -288,14 +284,11 @@ export default function Login() {
 
               <div className="space-y-2">
                 <input
-                  id="email-input"
                   type="email"
                   placeholder="you@example.com"
                   className="w-full h-12 px-4 rounded-xl text-sm bg-white/4 border border-white/8 focus:outline-none focus:border-primary/50 focus:bg-white/6 transition-all placeholder:text-muted-foreground/50"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      setError("Email sign-in is coming soon — please use Google for now.");
-                    }
+                    if (e.key === "Enter") setError("Email sign-in is coming soon — please use Google for now.");
                   }}
                 />
                 <button
