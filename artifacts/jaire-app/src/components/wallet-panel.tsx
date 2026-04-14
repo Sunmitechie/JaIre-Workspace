@@ -179,7 +179,9 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
       // Start polling immediately — webhook fires even without a JS callback
       pollPayment(reference, parsedNgn);
 
-      const popup = new PaystackPop();
+      // v1 inline script exports PaystackPop as a plain object (not a class).
+      // resumeTransaction lives directly on it — no `new` needed.
+      const popup = typeof PaystackPop === "function" ? new PaystackPop() : PaystackPop;
       popup.resumeTransaction(access_code);
     } catch (err: any) {
       setFundError(err.message ?? "Payment failed. Please try again.");
