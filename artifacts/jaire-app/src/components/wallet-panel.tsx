@@ -74,6 +74,24 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
 
   useEffect(() => { loadBalance(); }, [loadBalance]);
 
+  // On open, recover any payments that Paystack confirmed but webhook didn't reach
+  useEffect(() => {
+    if (!user?.email) return;
+    fetch(`${BASE_URL}/api/payments/recover-pending`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_email: user.email }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.recovered > 0) {
+          // Wait a few seconds for the on-chain transfer, then refresh balance
+          setTimeout(() => loadBalance(), 8000);
+        }
+      })
+      .catch(() => {});
+  }, [user?.email]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => () => stopPolling(), []);
 
   const pollPayment = (reference: string, amountNgn: number) => {
