@@ -286,7 +286,21 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
           ) : (
             <div>
               <div className="text-3xl font-bold mb-0.5">{formatNGN(ngnBalance)}</div>
-              <div className="text-xs text-muted-foreground">{wallet.usdc.toFixed(4)} USDC · {wallet.sol.toFixed(4)} SOL</div>
+              <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                <span>{wallet.usdc.toFixed(4)} USDC · {wallet.sol.toFixed(4)} SOL</span>
+                {user?.walletAddress && (
+                  <a
+                    href={`https://solscan.io/account/${user.walletAddress}?cluster=devnet`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sky-400 hover:underline flex items-center gap-0.5"
+                    title="View wallet on Solana Explorer (devnet)"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    devnet
+                  </a>
+                )}
+              </div>
             </div>
           )}
         </div>

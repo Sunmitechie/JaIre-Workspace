@@ -17,6 +17,8 @@ import {
   Keypair,
   PublicKey,
   Transaction,
+  SystemProgram,
+  LAMPORTS_PER_SOL,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
@@ -181,6 +183,29 @@ export async function fundUserWallet(
     const treasury = getTreasuryKeypair();
     const mint = new PublicKey(mintAddress);
     const recipient = new PublicKey(walletAddress);
+
+    // ── Activate wallet with a tiny SOL transfer if it has 0 lamports ──────
+    // This makes the account visible on Solana Explorer and pays for rent.
+    const existingLamports = await connection.getBalance(recipient);
+    if (existingLamports === 0) {
+      const ACTIVATION_SOL = 0.002; // enough for rent + future fees
+      const activationTx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: treasury.publicKey,
+          toPubkey: recipient,
+          lamports: Math.round(ACTIVATION_SOL * LAMPORTS_PER_SOL),
+        }),
+      );
+      try {
+        const activationSig = await sendAndConfirmTransaction(connection, activationTx, [treasury], {
+          commitment: "confirmed",
+        });
+        console.log(`[solana] Activated wallet ${walletAddress.slice(0, 8)} with ${ACTIVATION_SOL} SOL tx=${activationSig}`);
+      } catch (e) {
+        // Non-fatal — USDC transfer can still succeed even if SOL activation fails
+        console.warn(`[solana] SOL activation failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+      }
+    }
 
     const mintInfo = await getMint(connection, mint);
     const atomicAmount = Math.round(amountUsdc * Math.pow(10, mintInfo.decimals));
