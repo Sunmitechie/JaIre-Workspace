@@ -26,17 +26,20 @@ interface WalletPanelProps {
   onClose: () => void;
 }
 
-// Loads Paystack inline JS exactly once
-let paystackLoaded = false;
+// Loads Paystack v2 inline JS. Only skips if PaystackPop is already a
+// constructor function — a plain object means v1 was cached, so we reload.
+let paystackV2Loading: Promise<void> | null = null;
 function loadPaystackScript(): Promise<void> {
-  if (paystackLoaded || (window as any).PaystackPop) { paystackLoaded = true; return Promise.resolve(); }
-  return new Promise((resolve, reject) => {
+  if (typeof (window as any).PaystackPop === "function") return Promise.resolve();
+  if (paystackV2Loading) return paystackV2Loading;
+  paystackV2Loading = new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.src = "https://js.paystack.co/v2/inline.js";
-    s.onload = () => { paystackLoaded = true; resolve(); };
-    s.onerror = reject;
+    s.onload = () => resolve();
+    s.onerror = () => { paystackV2Loading = null; reject(new Error("Paystack script failed to load")); };
     document.head.appendChild(s);
   });
+  return paystackV2Loading;
 }
 
 export function WalletPanel({ onClose }: WalletPanelProps) {
