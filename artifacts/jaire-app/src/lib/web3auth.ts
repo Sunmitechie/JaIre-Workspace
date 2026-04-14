@@ -79,34 +79,47 @@ export function hasOAuthRedirectResult(): boolean {
  *   - Returning user who lost their device factor (re-generates it)
  */
 export async function handleOAuthRedirect(): Promise<Web3AuthUser | null> {
+  // kit.init() already calls handleRedirectResult() internally when it detects
+  // "#state" or "#access_token" in the URL hash (redirect mode). Calling it again
+  // after init() consumes the state and throws "Unsupported method type". So we
+  // only call it once here if init() did NOT already process it (status is still
+  // INITIALIZED, meaning init() ran but saw no redirect in the hash).
   const kit = await initWeb3Auth();
 
-  // ① Call handleRedirectResult (processes the OAuth code in the URL)
-  if (kit.status !== COREKIT_STATUS.LOGGED_IN) {
+  console.log("[web3auth] kit.status after init:", kit.status);
+
+  // ① If init() didn't process the redirect automatically (e.g. params in query
+  //    string rather than hash), do it now exactly once.
+  if (
+    kit.status !== COREKIT_STATUS.LOGGED_IN &&
+    kit.status !== COREKIT_STATUS.REQUIRED_SHARE
+  ) {
     try {
       await kit.handleRedirectResult();
-    } catch (err) {
-      console.error("[web3auth] handleRedirectResult failed:", err);
-      return null;
+      console.log("[web3auth] kit.status after handleRedirectResult:", kit.status);
+    } catch (err: any) {
+      const msg = err?.message || String(err) || "handleRedirectResult failed";
+      console.error("[web3auth] handleRedirectResult failed:", msg);
+      throw new Error(msg);
     }
   }
 
-  console.log("[web3auth] kit.status after handleRedirectResult:", kit.status);
-
-  // ② If still need a second factor, create / restore the device factor
+  // ② If a second factor is needed, create / restore the device factor.
   if (kit.status === COREKIT_STATUS.REQUIRED_SHARE) {
     try {
       await ensureDeviceFactor(kit);
-    } catch (err) {
-      console.error("[web3auth] ensureDeviceFactor failed:", err);
-      return null;
+    } catch (err: any) {
+      const msg = err?.message || String(err) || "ensureDeviceFactor failed";
+      console.error("[web3auth] ensureDeviceFactor failed:", msg);
+      throw new Error(msg);
     }
   }
 
-  // ③ Should be LOGGED_IN by now
+  // ③ Should be LOGGED_IN by now.
   if (kit.status !== COREKIT_STATUS.LOGGED_IN) {
-    console.error("[web3auth] unexpected status after factor setup:", kit.status);
-    return null;
+    const msg = `Unexpected status after factor setup: ${kit.status}`;
+    console.error("[web3auth]", msg);
+    throw new Error(msg);
   }
 
   return extractUserInfo(kit);

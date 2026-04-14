@@ -69,14 +69,7 @@ export default function Login() {
         if (hasOAuthRedirectResult()) {
           setStep("wallet");
           setStatusMsg("Completing sign-in…");
-          user = await handleOAuthRedirect();
-          if (!user) {
-            if (!cancelled) {
-              setError("Sign-in could not be completed. Please try again.");
-              setStep("choose");
-            }
-            return;
-          }
+          user = await handleOAuthRedirect(); // throws on failure
         } else {
           user = await getConnectedUser();
         }
