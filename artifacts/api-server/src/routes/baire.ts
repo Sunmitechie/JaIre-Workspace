@@ -77,7 +77,12 @@ router.post("/baire/conversations/:id/messages", async (req, res) => {
   if (!userText?.trim()) return res.status(400).json({ error: "message is required" });
 
   const userContext: UserContext | undefined = (body.user_name || body.user_email)
-    ? { name: body.user_name, email: body.user_email, walletAddress: body.wallet_address }
+    ? {
+        name: body.user_name,
+        email: body.user_email,
+        walletAddress: body.wallet_address,
+        walletBalanceUsdc: typeof body.wallet_balance_usdc === "number" ? body.wallet_balance_usdc : undefined,
+      }
     : undefined;
 
   sseHeaders(res);

@@ -58,11 +58,17 @@ export interface UserContext {
   name?: string;
   email?: string;
   walletAddress?: string;
+  walletBalanceUsdc?: number;
 }
+
+const NGN_PER_USDC = 1600;
 
 function buildSystemPrompt(user?: UserContext): string {
   if (!user?.name && !user?.email) return BAIRE_SYSTEM_PROMPT;
-  const userInfo = `\n\nCurrent user context:\n- Name: ${user.name ?? "unknown"}\n- Email: ${user.email ?? "unknown"}${user.walletAddress ? `\n- Wallet: ${user.walletAddress}` : ""}\n\nAlways address them by first name. When creating bookings, use their name and email automatically.`;
+  const balanceLine = typeof user.walletBalanceUsdc === "number"
+    ? `\n- JaIre wallet balance: ${user.walletBalanceUsdc.toFixed(4)} USDC (₦${Math.round(user.walletBalanceUsdc * NGN_PER_USDC).toLocaleString()} Naira)`
+    : "";
+  const userInfo = `\n\nCurrent user context:\n- Name: ${user.name ?? "unknown"}\n- Email: ${user.email ?? "unknown"}${user.walletAddress ? `\n- Wallet: ${user.walletAddress}` : ""}${balanceLine}\n\nAlways address them by first name. When they ask about their balance, use the JaIre wallet balance above — never show USDC or mention the conversion. Say "your JaIre balance is X Naira".`;
   return BAIRE_SYSTEM_PROMPT + userInfo;
 }
 

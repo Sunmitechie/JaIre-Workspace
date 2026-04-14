@@ -59,6 +59,7 @@ export default function Baire() {
   const [showInput, setShowInput] = useState(false);
   const [inputText, setInputText] = useState("");
   const [listeningLabel, setListeningLabel] = useState("Listening…");
+  const [walletBalanceUsdc, setWalletBalanceUsdc] = useState<number | null>(null);
 
   const isWelcome = messages.length === 0;
 
@@ -72,6 +73,14 @@ export default function Baire() {
   useEffect(() => {
     createConversation().then(setConvId).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (!user?.walletAddress) return;
+    fetch(`${BASE_URL}/api/wallet/balance?address=${user.walletAddress}`)
+      .then((r) => r.json())
+      .then((d) => { if (typeof d.balance_usdc === "number") setWalletBalanceUsdc(d.balance_usdc); })
+      .catch(() => {});
+  }, [user?.walletAddress]);
 
   useEffect(() => {
     if (scrollRef.current && !isWelcome) {
@@ -122,6 +131,7 @@ export default function Baire() {
             user_name: user?.name,
             user_email: user?.email,
             wallet_address: user?.walletAddress,
+            wallet_balance_usdc: walletBalanceUsdc ?? undefined,
           }),
         });
         if (!response.body) throw new Error("no body");
@@ -167,7 +177,7 @@ export default function Baire() {
         setBaireState("idle");
       }
     },
-    [convId, baireState, user, speakWithElevenLabs]
+    [convId, baireState, user, speakWithElevenLabs, walletBalanceUsdc]
   );
 
   const sendVoiceMessage = useCallback(
