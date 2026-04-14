@@ -2,7 +2,7 @@ import { Router } from "express";
 import crypto from "crypto";
 import { db } from "@workspace/db";
 import { payments, users, bookings } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 const router = Router();
 
@@ -186,12 +186,96 @@ router.post("/payments/webhook", async (req, res) => {
 });
 
 // ── GET /api/payments/status/:reference ────────────────────────────────────
+// Checks DB first. If still pending, verifies directly with Paystack (handles
+// the case where the webhook hasn't arrived yet — common in dev environments).
 router.get("/payments/status/:reference", async (req, res) => {
   const { reference } = req.params;
   try {
     const [payment] = await db.select().from(payments).where(eq(payments.reference, reference));
     if (!payment) return res.status(404).json({ error: "Payment not found" });
+
+    // Already confirmed — just return it
+    if (payment.status === "success") {
+      return res.json(payment);
+    }
+
+    // Still pending: ask Paystack directly (webhook fallback)
+    try {
+      const psRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${reference}`, {
+        headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+      });
+      if (psRes.ok) {
+        const psData = (await psRes.json()) as any;
+        if (psData.data?.status === "success") {
+          // Update DB atomically — only process if we're the first to flip it
+          const updated = await db
+            .update(payments)
+            .set({ status: "success", updatedAt: new Date() })
+            .where(eq(payments.reference, reference))
+            .returning();
+
+          const freshPayment = updated[0];
+          if (freshPayment && !freshPayment.txSignature) {
+            // Fire-and-forget the on-chain transfer; don't block the response
+            processSuccessfulPayment(freshPayment).catch((e) =>
+              console.error("[status] processSuccessfulPayment error:", e)
+            );
+          }
+          return res.json({ ...freshPayment, status: "success" });
+        }
+      }
+    } catch (verifyErr) {
+      // Paystack verify failed — just return what we have in DB
+      console.warn("[status] Paystack verify failed:", verifyErr);
+    }
+
     res.json(payment);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/payments/recover-pending ─────────────────────────────────────
+// Called when the wallet panel opens. Finds any pending payments for the user,
+// checks Paystack, and processes those that already succeeded (webhook fallback).
+router.post("/payments/recover-pending", async (req, res) => {
+  const { user_email } = req.body as { user_email?: string };
+  if (!user_email) return res.status(400).json({ error: "user_email required" });
+
+  try {
+    const pending = await db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.userEmail, user_email), eq(payments.status, "pending")));
+
+    let recovered = 0;
+    for (const payment of pending) {
+      try {
+        const psRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${payment.reference}`, {
+          headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+        });
+        if (!psRes.ok) continue;
+        const psData = (await psRes.json()) as any;
+        if (psData.data?.status !== "success") continue;
+
+        const updated = await db
+          .update(payments)
+          .set({ status: "success", updatedAt: new Date() })
+          .where(and(eq(payments.reference, payment.reference), eq(payments.status, "pending")))
+          .returning();
+
+        if (updated[0] && !updated[0].txSignature) {
+          processSuccessfulPayment(updated[0]).catch((e) =>
+            console.error("[recover] processSuccessfulPayment error:", e)
+          );
+          recovered++;
+        }
+      } catch (e) {
+        console.warn(`[recover] Failed to verify ${payment.reference}:`, e);
+      }
+    }
+
+    res.json({ checked: pending.length, recovered });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
