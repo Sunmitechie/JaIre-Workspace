@@ -189,6 +189,9 @@ router.post("/payments/webhook", async (req, res) => {
 // Checks DB first. If still pending, verifies directly with Paystack (handles
 // the case where the webhook hasn't arrived yet — common in dev environments).
 router.get("/payments/status/:reference", async (req, res) => {
+  // Disable ALL caching — the client polls this; stale ETags produce silent 304s
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.setHeader("Pragma", "no-cache");
   const { reference } = req.params;
   try {
     const [payment] = await db.select().from(payments).where(eq(payments.reference, reference));
@@ -236,19 +239,22 @@ router.get("/payments/status/:reference", async (req, res) => {
 });
 
 // ── POST /api/payments/recover-pending ─────────────────────────────────────
-// Called when the wallet panel opens. Finds any pending payments for the user,
-// checks Paystack, and processes those that already succeeded (webhook fallback).
+// Called when the wallet panel opens. Two recovery passes:
+//  1. Pending in DB → verify with Paystack → if confirmed, run on-chain transfer
+//  2. Success in DB but no tx_signature → on-chain transfer silently failed, retry
 router.post("/payments/recover-pending", async (req, res) => {
   const { user_email } = req.body as { user_email?: string };
   if (!user_email) return res.status(400).json({ error: "user_email required" });
 
   try {
+    let recovered = 0;
+
+    // Pass 1: Pending payments — check Paystack and flip + transfer if confirmed
     const pending = await db
       .select()
       .from(payments)
       .where(and(eq(payments.userEmail, user_email), eq(payments.status, "pending")));
 
-    let recovered = 0;
     for (const payment of pending) {
       try {
         const psRes = await fetch(`${PAYSTACK_BASE}/transaction/verify/${payment.reference}`, {
@@ -275,7 +281,27 @@ router.post("/payments/recover-pending", async (req, res) => {
       }
     }
 
-    res.json({ checked: pending.length, recovered });
+    // Pass 2: Success in DB but tx_signature is null → on-chain transfer failed, retry
+    const allSuccess = await db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.userEmail, user_email), eq(payments.status, "success")));
+
+    const noTxPayments = allSuccess.filter((p) => !p.txSignature);
+
+    for (const payment of noTxPayments) {
+      try {
+        console.log(`[recover] Retrying failed on-chain transfer for ${payment.reference}`);
+        processSuccessfulPayment(payment).catch((e) =>
+          console.error("[recover-pass2] processSuccessfulPayment error:", e)
+        );
+        recovered++;
+      } catch (e) {
+        console.warn(`[recover] Retry failed for ${payment.reference}:`, e);
+      }
+    }
+
+    res.json({ checked: pending.length + noTxPayments.length, recovered });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -310,9 +336,13 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     return;
   }
 
-  const fundData = (await fundRes.json()) as { tx_signature?: string; success?: boolean };
-  const fundTx = fundData.tx_signature;
-  console.log(`[payment] Funded user wallet tx: ${fundTx}`);
+  const fundData = (await fundRes.json()) as { tx_signature?: string | null; success?: boolean; error?: string };
+  const fundTx = fundData.tx_signature ?? null;
+  if (fundTx) {
+    console.log(`[payment] Funded user wallet tx: ${fundTx}`);
+  } else {
+    console.error(`[payment] Fund FAILED for ${reference}: ${fundData.error ?? "unknown error"}`);
+  }
 
   // Save funding tx
   await db

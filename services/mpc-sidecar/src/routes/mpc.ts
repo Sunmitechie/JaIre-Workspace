@@ -388,10 +388,16 @@ router.post("/fund-by-address", async (req: Request, res: Response) => {
 
     const result = await fundUserWallet(wallet_address, usdc_amount, mint, false);
 
-    console.log(
-      `[mpc/fund-by-address] ${result.is_simulated ? "SIM" : "LIVE"} ` +
-      `${usdc_amount} USDC → ${wallet_address.slice(0, 8)}... ref=${reference ?? "none"} tx=${result.tx_signature}`,
-    );
+    if (result.tx_signature) {
+      console.log(
+        `[mpc/fund-by-address] ${result.is_simulated ? "SIM" : "LIVE"} ` +
+        `${usdc_amount} USDC → ${wallet_address.slice(0, 8)}... ref=${reference ?? "none"} tx=${result.tx_signature}`,
+      );
+    } else {
+      console.error(
+        `[mpc/fund-by-address] FAILED ${usdc_amount} USDC → ${wallet_address.slice(0, 8)}... ref=${reference ?? "none"} error=${result.error}`,
+      );
+    }
 
     res.json({ ...result, wallet_address, reference });
   } catch (err) {

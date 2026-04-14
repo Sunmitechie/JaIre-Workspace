@@ -53,22 +53,62 @@ export function getSolanaConnection(): Connection {
 
 let _treasury: Keypair | null = null;
 
+/**
+ * Parse any common Solana keypair format into a Keypair.
+ * Supported formats:
+ *   - JSON byte array: [1,2,3,…]  (32 bytes → seed, 64 bytes → full keypair)
+ *   - 64-char hex: 32-byte seed
+ *   - 128-char hex: 64-byte full keypair
+ *   - Base64: decoded as-is; 32 bytes → seed, 64 bytes → full keypair
+ *   - Base58: decoded as-is; 32 bytes → seed, 64 bytes → full keypair
+ */
+function parseKeypair(raw: string, name: string): Keypair {
+  const trimmed = raw.trim();
+  let bytes: Uint8Array;
+
+  if (trimmed.startsWith("[")) {
+    // JSON byte array
+    bytes = Uint8Array.from(JSON.parse(trimmed) as number[]);
+  } else if (/^[0-9a-fA-F]{128}$/.test(trimmed)) {
+    // 128 hex chars = 64-byte full keypair
+    bytes = Uint8Array.from(Buffer.from(trimmed, "hex"));
+  } else if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    // 64 hex chars = 32-byte seed
+    bytes = Uint8Array.from(Buffer.from(trimmed, "hex"));
+  } else if (/[+/=]/.test(trimmed)) {
+    // Base64 (contains chars not in base58 or hex alphabet)
+    bytes = Uint8Array.from(Buffer.from(trimmed, "base64"));
+  } else {
+    // Try base58
+    try {
+      bytes = bs58.decode(trimmed);
+    } catch {
+      throw new Error(
+        `${name}: unrecognised key format (length=${trimmed.length}). ` +
+        `Supported: JSON array, 64-char hex (seed), 128-char hex (full), base64, base58.`
+      );
+    }
+  }
+
+  // Choose constructor based on byte length
+  if (bytes.length === 32) {
+    return Keypair.fromSeed(bytes);
+  } else if (bytes.length === 64) {
+    return Keypair.fromSecretKey(bytes);
+  } else {
+    throw new Error(
+      `${name}: expected 32 or 64 bytes but got ${bytes.length}. Check the key value in Secrets.`
+    );
+  }
+}
+
 export function getTreasuryKeypair(): Keypair {
   if (_treasury) return _treasury;
 
   const raw = process.env.JAIRE_TREASURY_PRIVATE_KEY;
   if (!raw) throw new Error("JAIRE_TREASURY_PRIVATE_KEY not set");
 
-  let bytes: Uint8Array;
-  if (/^[0-9a-fA-F]{128}$/.test(raw)) {
-    bytes = Uint8Array.from(Buffer.from(raw, "hex"));
-  } else if (raw.startsWith("[")) {
-    bytes = Uint8Array.from(JSON.parse(raw) as number[]);
-  } else {
-    bytes = bs58.decode(raw);
-  }
-
-  _treasury = Keypair.fromSecretKey(bytes);
+  _treasury = parseKeypair(raw, "JAIRE_TREASURY_PRIVATE_KEY");
   return _treasury;
 }
 
@@ -202,15 +242,7 @@ export function getVaultKeypair(): Keypair {
   if (_vault) return _vault;
   const raw = process.env.JAIRE_VAULT_PRIVATE_KEY;
   if (!raw) throw new Error("JAIRE_VAULT_PRIVATE_KEY not set");
-  let bytes: Uint8Array;
-  if (/^[0-9a-fA-F]{128}$/.test(raw)) {
-    bytes = Uint8Array.from(Buffer.from(raw, "hex"));
-  } else if (raw.startsWith("[")) {
-    bytes = Uint8Array.from(JSON.parse(raw) as number[]);
-  } else {
-    bytes = bs58.decode(raw);
-  }
-  _vault = Keypair.fromSecretKey(bytes);
+  _vault = parseKeypair(raw, "JAIRE_VAULT_PRIVATE_KEY");
   return _vault;
 }
 
