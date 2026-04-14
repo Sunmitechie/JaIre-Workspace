@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRoute, useLocation, Link } from "wouter";
 import { useGetWorkspace, useCreateBooking } from "@workspace/api-client-react";
 import { formatNGN } from "@/lib/currency";
+import { getUser } from "@/lib/auth";
 import { ArrowLeft, Clock, CreditCard, Minus, Plus } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
@@ -14,6 +15,7 @@ export default function BookWorkspace() {
   const [hours, setHours] = useState(2);
   const { data: ws, isLoading } = useGetWorkspace(workspaceId, { query: { enabled: !!workspaceId } });
   const createBooking = useCreateBooking();
+  const user = getUser();
 
   const handleBook = () => {
     if (!ws) return;
@@ -22,7 +24,9 @@ export default function BookWorkspace() {
         data: {
           workspace_id: workspaceId,
           planned_duration_hours: hours,
-          payment_method: "paystack_ngn",
+          payment_method: "paystack",
+          user_email: user?.email,
+          user_name: user?.name,
         },
       },
       {

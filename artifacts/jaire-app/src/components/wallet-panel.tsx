@@ -32,7 +32,7 @@ function loadPaystackScript(): Promise<void> {
   if (paystackLoaded || (window as any).PaystackPop) { paystackLoaded = true; return Promise.resolve(); }
   return new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = "https://js.paystack.co/v1/inline.js";
+    s.src = "https://js.paystack.co/v2/inline.js";
     s.onload = () => { paystackLoaded = true; resolve(); };
     s.onerror = reject;
     document.head.appendChild(s);
@@ -179,9 +179,8 @@ export function WalletPanel({ onClose }: WalletPanelProps) {
       // Start polling immediately — webhook fires even without a JS callback
       pollPayment(reference, parsedNgn);
 
-      // v1 inline script exports PaystackPop as a plain object (not a class).
-      // resumeTransaction lives directly on it — no `new` needed.
-      const popup = typeof PaystackPop === "function" ? new PaystackPop() : PaystackPop;
+      // v2 inline script: PaystackPop is a class — always use new.
+      const popup = new PaystackPop();
       popup.resumeTransaction(access_code);
     } catch (err: any) {
       setFundError(err.message ?? "Payment failed. Please try again.");
