@@ -25,6 +25,7 @@ import {
   getAssociatedTokenAddress,
   getOrCreateAssociatedTokenAccount,
   createTransferInstruction,
+  createMintToInstruction,
   getMint,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
@@ -269,6 +270,106 @@ export function getVaultKeypair(): Keypair {
   if (!raw) throw new Error("JAIRE_VAULT_PRIVATE_KEY not set");
   _vault = parseKeypair(raw, "JAIRE_VAULT_PRIVATE_KEY");
   return _vault;
+}
+
+// ── Fund user wallet FROM VAULT (vault is the exchange disbursement wallet) ─
+
+const VAULT_MIN_RESERVE_USDC = 50; // trigger auto-top-up when vault balance drops this low
+const VAULT_TOPUP_USDC = 10_000;   // how much to mint into vault from treasury each top-up
+
+export async function vaultFundUser(
+  walletAddress: string,
+  amountUsdc: number,
+  mintAddress: string = DEFAULT_TEST_MINT,
+): Promise<FundResult> {
+  try {
+    const connection = getSolanaConnection();
+    const treasury = getTreasuryKeypair();
+    const vault = getVaultKeypair();
+    const mint = new PublicKey(mintAddress);
+    const recipient = new PublicKey(walletAddress);
+    const mintInfo = await getMint(connection, mint);
+    const decimals = mintInfo.decimals;
+
+    // ── Step 1: SOL activation (treasury pays) ───────────────────────────
+    const existingLamports = await connection.getBalance(recipient);
+    if (existingLamports === 0) {
+      const ACTIVATION_SOL = 0.002;
+      const activationTx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: treasury.publicKey,
+          toPubkey: recipient,
+          lamports: Math.round(ACTIVATION_SOL * LAMPORTS_PER_SOL),
+        }),
+      );
+      try {
+        const sig = await sendAndConfirmTransaction(connection, activationTx, [treasury], { commitment: "confirmed" });
+        console.log(`[solana] Activated wallet ${walletAddress.slice(0, 8)} with ${ACTIVATION_SOL} SOL tx=${sig}`);
+      } catch (e) {
+        console.warn(`[solana] SOL activation failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+      }
+    }
+
+    // ── Step 2: Ensure vault ATA exists (treasury pays for ATA creation) ─
+    const vaultATA = await getOrCreateAssociatedTokenAccount(
+      connection,
+      treasury,        // payer for ATA rent
+      mint,
+      vault.publicKey,
+    );
+
+    // ── Step 3: Auto-top-up vault from treasury if balance is low ────────
+    const vaultBalance = Number(vaultATA.amount) / Math.pow(10, decimals);
+    if (vaultBalance < amountUsdc + VAULT_MIN_RESERVE_USDC) {
+      const topupAtomic = Math.round(VAULT_TOPUP_USDC * Math.pow(10, decimals));
+      const mintTx = new Transaction().add(
+        createMintToInstruction(mint, vaultATA.address, treasury.publicKey, topupAtomic),
+      );
+      await sendAndConfirmTransaction(connection, mintTx, [treasury], { commitment: "confirmed" });
+      console.log(`[solana] Vault topped-up with ${VAULT_TOPUP_USDC} USDC (was ${vaultBalance.toFixed(4)} USDC)`);
+    }
+
+    // ── Step 4: Ensure user ATA exists (treasury pays for ATA rent) ──────
+    const userATA = await getOrCreateAssociatedTokenAccount(
+      connection,
+      treasury,        // payer for ATA rent
+      mint,
+      recipient,
+    );
+
+    // ── Step 5: Vault → User transfer (vault signs) ───────────────────────
+    const atomicAmount = Math.round(amountUsdc * Math.pow(10, decimals));
+    const tx = new Transaction().add(
+      createTransferInstruction(
+        vaultATA.address,
+        userATA.address,
+        vault.publicKey,
+        atomicAmount,
+        [],
+        TOKEN_PROGRAM_ID,
+      ),
+    );
+
+    const sig = await sendAndConfirmTransaction(connection, tx, [vault], { commitment: "confirmed" });
+
+    return {
+      success: true,
+      tx_signature: sig,
+      amount_usdc: amountUsdc,
+      wallet_address: walletAddress,
+      is_simulated: false,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      tx_signature: null,
+      amount_usdc: amountUsdc,
+      wallet_address: walletAddress,
+      is_simulated: false,
+      error: message,
+    };
+  }
 }
 
 /**
