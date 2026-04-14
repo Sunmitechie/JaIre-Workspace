@@ -260,6 +260,9 @@ importers:
       '@web3auth/mpc-core-kit':
         specifier: 3.5.0
         version: 3.5.0(@babel/runtime@7.29.2)(@toruslabs/tss-dkls-lib@4.1.0)(@toruslabs/tss-frost-lib@1.0.0)(bufferutil@4.1.0)(prettier@3.8.1)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      bn.js:
+        specifier: ^5.2.3
+        version: 5.2.3
       html5-qrcode:
         specifier: ^2.3.8
         version: 2.3.8
