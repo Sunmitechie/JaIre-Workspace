@@ -1,7 +1,7 @@
 import { Router } from "express";
-import crypto from "crypto";
+import crypto, { randomUUID } from "crypto";
 import { db } from "@workspace/db";
-import { payments, users, bookings } from "@workspace/db/schema";
+import { payments, users, bookings, activityEvents, workspaces } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
 
 const router = Router();
@@ -304,6 +304,187 @@ router.post("/payments/recover-pending", async (req, res) => {
     res.json({ checked: pending.length + noTxPayments.length, recovered });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/payments/book-with-balance ───────────────────────────────────
+// Smart booking: use wallet USDC if sufficient, else fall back to Paystack.
+// Returns { method:"wallet"|"paystack", booking_id, ... }
+router.post("/payments/book-with-balance", async (req, res) => {
+  try {
+    const { workspace_id, planned_duration_hours, user_email, user_name } = req.body as {
+      workspace_id: string;
+      planned_duration_hours: number;
+      user_email: string;
+      user_name?: string;
+    };
+
+    if (!workspace_id || !planned_duration_hours || !user_email) {
+      return res.status(400).json({ error: "workspace_id, planned_duration_hours and user_email are required" });
+    }
+
+    // Look up workspace
+    const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, workspace_id));
+    if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+    const escrowUsdc = ws.hourlyRateUsdc * planned_duration_hours;
+    const amountNgn = ws.hourlyRateNgn * planned_duration_hours;
+
+    // Look up user wallet + verifier_id
+    const [user] = await db.select().from(users).where(eq(users.email, user_email));
+    const userWalletAddress = user?.walletAddress;
+    const verifierId = user?.verifierId;
+
+    // Check wallet balance
+    let walletBalanceUsdc = 0;
+    if (userWalletAddress) {
+      try {
+        const balRes = await fetch(`${MPC_SIDECAR}/mpc/balance/${userWalletAddress}`);
+        if (balRes.ok) {
+          const balData = (await balRes.json()) as { usdc_balance?: number };
+          walletBalanceUsdc = balData.usdc_balance ?? 0;
+        }
+      } catch { /* fall through to Paystack */ }
+    }
+
+    // Create booking in pending status
+    const bookingId = randomUUID();
+    await db.insert(bookings).values({
+      id: bookingId,
+      workspaceId: workspace_id,
+      userId: user_email ?? "guest",
+      userName: user_name ?? "Guest",
+      userEmail: user_email,
+      status: "pending",
+      plannedDurationHours: planned_duration_hours,
+      escrowAmountUsdc: escrowUsdc,
+      paymentMethod: "paystack",
+      ngnAmountPaid: amountNgn,
+    });
+
+    // Path A: wallet has enough USDC → escrow directly
+    if (walletBalanceUsdc >= escrowUsdc && verifierId) {
+      console.log(`[book-with-balance] Wallet has ${walletBalanceUsdc} USDC — enough for ${escrowUsdc} USDC escrow`);
+
+      const escrowRes = await fetch(`${MPC_SIDECAR}/mpc/internal/escrow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verifier_id: verifierId, amount_usdc: escrowUsdc }),
+      });
+
+      if (!escrowRes.ok) {
+        const errText = await escrowRes.text();
+        console.error(`[book-with-balance] Escrow failed: ${errText}`);
+        // Fall through to Paystack if escrow fails
+      } else {
+        const escrowData = (await escrowRes.json()) as { tx_signature?: string };
+        const escrowTx = escrowData.tx_signature ?? null;
+
+        // Confirm booking
+        await db.update(bookings).set({
+          status: "active",
+          checkInTime: new Date(),
+          escrowTxSignature: escrowTx,
+          paymentMethod: "usdc_wallet",
+        }).where(eq(bookings.id, bookingId));
+
+        // Log activity events
+        await db.insert(activityEvents).values({
+          id: randomUUID(),
+          eventType: "check_in",
+          workspaceId: workspace_id,
+          workspaceName: ws.name,
+          userId: user_email,
+          userName: user_name ?? "Guest",
+          amountUsdc: null,
+          amountNgn: null,
+        });
+        await db.insert(activityEvents).values({
+          id: randomUUID(),
+          eventType: "payment",
+          workspaceId: workspace_id,
+          workspaceName: ws.name,
+          userId: user_email,
+          userName: user_name ?? "Guest",
+          amountUsdc: escrowUsdc,
+          amountNgn: amountNgn,
+        });
+
+        console.log(`[book-with-balance] Booking ${bookingId} confirmed from wallet, escrow tx: ${escrowTx}`);
+
+        return res.json({
+          method: "wallet",
+          booking_id: bookingId,
+          workspace_name: ws.name,
+          booking_status: "active",
+          escrow_tx: escrowTx,
+          amount_usdc: escrowUsdc,
+          amount_ngn: amountNgn,
+          wallet_balance_usdc: walletBalanceUsdc,
+        });
+      }
+    }
+
+    // Path B: insufficient balance or escrow failed → Paystack
+    const shortfallUsdc = Math.max(0, escrowUsdc - walletBalanceUsdc);
+    const shortfallNgn = Math.round(shortfallUsdc * MARKET_RATE);
+
+    const reference = generateRef();
+    const amountKobo = Math.round(amountNgn * 100);
+    const amountUsdc = ngnToUsdc(amountNgn);
+
+    const psRes = await fetch(`${PAYSTACK_BASE}/transaction/initialize`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user_email,
+        amount: amountKobo,
+        reference,
+        currency: "NGN",
+        metadata: {
+          custom_fields: [
+            { display_name: "Booking ID", variable_name: "booking_id", value: bookingId },
+            { display_name: "Wallet", variable_name: "wallet_address", value: userWalletAddress ?? "" },
+          ],
+        },
+      }),
+    });
+
+    const psData = (await psRes.json()) as any;
+    if (!psRes.ok || !psData.status) {
+      return res.status(502).json({ error: psData.message ?? "Paystack error" });
+    }
+
+    // Record payment
+    await db.insert(payments).values({
+      bookingId,
+      userEmail: user_email,
+      userWalletAddress: userWalletAddress,
+      amountNgn,
+      amountUsdc,
+      fxRate: JAIRE_RATE,
+      fxSpreadPct: FX_SPREAD_PCT,
+      reference,
+      provider: "paystack",
+      status: "pending",
+    });
+
+    return res.json({
+      method: "paystack",
+      booking_id: bookingId,
+      workspace_name: ws.name,
+      booking_status: "pending",
+      paystack_reference: reference,
+      paystack_url: psData.data.authorization_url,
+      paystack_access_code: psData.data.access_code,
+      amount_ngn: amountNgn,
+      amount_usdc: amountUsdc,
+      wallet_balance_usdc: walletBalanceUsdc,
+      shortfall_ngn: shortfallNgn,
+    });
+  } catch (err: any) {
+    console.error("[book-with-balance] error:", err);
+    res.status(500).json({ error: err.message ?? "Booking failed" });
   }
 });
 

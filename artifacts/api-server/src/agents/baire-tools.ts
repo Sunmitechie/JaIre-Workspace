@@ -198,47 +198,64 @@ export const getJaireInfoTool = new DynamicStructuredTool({
   },
 });
 
-export const createBookingTool = new DynamicStructuredTool({
-  name: "create_booking",
-  description: "Create and confirm a booking for the user. Call this when the user says 'book it', 'confirm', or explicitly asks to book.",
+export const bookAndPayTool = new DynamicStructuredTool({
+  name: "book_and_pay",
+  description: "Smart booking: checks the user's wallet balance first. If they have enough USDC, the booking is confirmed instantly from their wallet and escrow is set up automatically. If not, a Paystack payment link is created. Always use this to book — do NOT use create_booking + initiate_payment separately.",
   schema: z.object({
     workspace_id: z.string().describe("The workspace ID (e.g. ws-001)"),
     planned_duration_hours: z.number().describe("How many hours to book"),
     user_name: z.string().optional().describe("User's name"),
-    user_email: z.string().optional().describe("User's email"),
-    user_wallet_address: z.string().optional().describe("User's wallet address"),
+    user_email: z.string().describe("User's email address — required"),
   }),
-  func: async ({ workspace_id, planned_duration_hours, user_name, user_email, user_wallet_address }) => {
+  func: async ({ workspace_id, planned_duration_hours, user_name, user_email }) => {
     try {
-      const response = await fetch(`${API_BASE}/bookings`, {
+      const res = await fetch(`${API_BASE}/payments/book-with-balance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          workspace_id,
-          planned_duration_hours,
-          payment_method: "paystack",
-          user_name: user_name ?? "JaIre Guest",
-          user_email: user_email ?? undefined,
-        }),
+        body: JSON.stringify({ workspace_id, planned_duration_hours, user_email, user_name }),
       });
 
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({})) as Record<string, unknown>;
-        return JSON.stringify({ error: `Booking failed: ${(err as any).error ?? response.status}` });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as any;
+        return JSON.stringify({ error: `Booking failed: ${err.error ?? res.status}` });
       }
 
-      const booking = await response.json() as Record<string, unknown>;
+      const data = await res.json() as {
+        method: "wallet" | "paystack";
+        booking_id: string;
+        workspace_name: string;
+        booking_status: string;
+        escrow_tx?: string;
+        paystack_url?: string;
+        paystack_reference?: string;
+        amount_ngn: number;
+        wallet_balance_usdc: number;
+        shortfall_ngn?: number;
+      };
+
+      if (data.method === "wallet") {
+        return JSON.stringify({
+          success: true,
+          method: "wallet",
+          booking_id: data.booking_id,
+          workspace_name: data.workspace_name,
+          booking_status: "active",
+          message: `Booking confirmed! Your session at ${data.workspace_name} is live. The USDC was moved from your JaIre wallet to escrow automatically. Head to the session screen to track your time.`,
+        });
+      }
+
       return JSON.stringify({
         success: true,
-        booking_id: booking["id"],
-        workspace_name: booking["workspace_name"],
-        status: booking["status"],
-        planned_hours: booking["planned_duration_hours"],
-        message: `Booking confirmed! Your session at ${booking["workspace_name"]} is ready.`,
-        next_step: "use initiate_payment to process the Naira payment",
+        method: "paystack",
+        booking_id: data.booking_id,
+        workspace_name: data.workspace_name,
+        booking_status: "pending_payment",
+        payment_url: data.paystack_url,
+        amount_ngn: data.amount_ngn,
+        message: `Your booking at ${data.workspace_name} is held! Complete payment here: ${data.paystack_url} — your USDC will be credited and the session starts automatically.`,
       });
     } catch (err: any) {
-      return JSON.stringify({ error: `Could not create booking: ${err?.message}` });
+      return JSON.stringify({ error: `Could not complete booking: ${err?.message}` });
     }
   },
 });
@@ -329,7 +346,7 @@ export const baireTools = [
   checkWalletBalanceTool,
   getExchangeRateTool,
   getJaireInfoTool,
-  createBookingTool,
+  bookAndPayTool,
   initiatePaymentTool,
   checkPaymentStatusTool,
 ];
