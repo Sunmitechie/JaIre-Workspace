@@ -341,11 +341,16 @@ router.post("/payments/book-with-balance", async (req, res) => {
     const escrowUsdc = ws.hourlyRateUsdc * planned_duration_hours;
     const amountNgn = ws.hourlyRateNgn * planned_duration_hours;
 
-    // Look up user wallet + verifier_id
-    const [user] = await db.select().from(users).where(eq(users.email, user_email));
+    // Look up user wallet + verifier_id — try email first, then wallet address
+    const [userByEmail] = await db.select().from(users).where(eq(users.email, user_email));
+    let resolvedUser = userByEmail;
+    if (!resolvedUser?.verifierId && requestWalletAddress) {
+      const [userByWallet] = await db.select().from(users).where(eq(users.walletAddress, requestWalletAddress));
+      resolvedUser = userByWallet ?? resolvedUser;
+    }
     // Use DB wallet address, falling back to the address provided in the request
-    const userWalletAddress = user?.walletAddress ?? requestWalletAddress;
-    const verifierId = user?.verifierId;
+    const userWalletAddress = resolvedUser?.walletAddress ?? requestWalletAddress;
+    const verifierId = resolvedUser?.verifierId;
 
     // Check wallet balance
     let walletBalanceUsdc = 0;
@@ -545,10 +550,23 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     return;
   }
 
-  // Look up verifier_id from users table
-  const [user] = await db.select().from(users).where(eq(users.email, userEmail));
-  if (!user?.verifierId) {
-    console.warn(`[payment] No verifier_id found for ${userEmail} — skipping escrow`);
+  // Look up verifier_id from users table — try email first, then wallet address
+  const [userByEmail] = await db.select().from(users).where(eq(users.email, userEmail));
+  let escrowUser = userByEmail;
+  if (!escrowUser?.verifierId && userWalletAddress) {
+    const [userByWallet] = await db.select().from(users).where(eq(users.walletAddress, userWalletAddress));
+    escrowUser = userByWallet ?? escrowUser;
+  }
+  if (!escrowUser?.verifierId) {
+    console.warn(`[payment] No verifier_id found for ${userEmail} / ${userWalletAddress} — skipping on-chain escrow`);
+    // Still mark booking as confirmed (funds were received) so user isn't stuck
+    await db.update(bookings).set({
+      status: "confirmed",
+      escrowAmountUsdc: booking.escrowAmountUsdc ?? amountUsdc,
+      ngnAmountPaid: payment.amountNgn,
+      paymentMethod: "paystack",
+    }).where(eq(bookings.id, bookingId));
+    console.warn(`[payment] Booking ${bookingId} confirmed WITHOUT on-chain escrow (no verifier_id)`);
     return;
   }
 

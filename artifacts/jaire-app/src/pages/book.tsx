@@ -57,10 +57,23 @@ export default function BookWorkspace() {
 
   const { data: ws, isLoading } = useGetWorkspace(workspaceId, { query: { enabled: !!workspaceId } });
 
-  // Fetch wallet balance on mount
+  // Sync verifierId to DB so wallet booking path works
   useEffect(() => {
-    if (!user?.walletAddress) return;
-    fetch(`${BASE}/api/jaire/devnet/balance/${user.walletAddress}`, { cache: "no-store" })
+    if (!user?.idToken) return;
+    fetch(`${BASE}/api/wallet/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ web3auth_token: user.idToken, email: user.email, name: user.name }),
+    }).catch(() => {});
+  }, [user?.idToken]);
+
+  // Fetch wallet balance on mount — use MPC sidecar directly (no Python API dependency)
+  useEffect(() => {
+    if (!user?.walletAddress) {
+      setWalletBalanceUsdc(0);
+      return;
+    }
+    fetch(`${BASE}/mpc/balance/${user.walletAddress}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d: any) => setWalletBalanceUsdc(d.usdc_balance ?? 0))
       .catch(() => setWalletBalanceUsdc(0));

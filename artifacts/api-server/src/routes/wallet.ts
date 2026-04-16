@@ -169,4 +169,54 @@ router.post("/fund", async (req, res) => {
   }
 });
 
+// ── POST /wallet/devnet-airdrop ────────────────────────────────────────────
+// DEV/DEMO ONLY — sends test USDC from JaIre treasury to the user's wallet.
+// Demonstrates the wallet-funded escrow path without needing a Paystack payment.
+router.post("/devnet-airdrop", async (req, res) => {
+  try {
+    const { wallet_address, amount_usdc } = req.body as {
+      wallet_address?: string;
+      amount_usdc?: number;
+    };
+
+    if (!wallet_address) {
+      return res.status(400).json({ error: "wallet_address is required" });
+    }
+
+    const usdc = Math.min(amount_usdc ?? 5, 20); // cap at 20 USDC
+
+    const fundRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet_address, usdc_amount: usdc, reference: `AIRDROP-${Date.now()}` }),
+    });
+
+    if (!fundRes.ok) {
+      const text = await fundRes.text();
+      return res.status(502).json({ error: `Airdrop failed: ${text}` });
+    }
+
+    const data = (await fundRes.json()) as { tx_signature?: string; success?: boolean; is_simulated?: boolean; error?: string };
+
+    if (!data.success) {
+      return res.status(500).json({ error: data.error ?? "Airdrop failed" });
+    }
+
+    console.log(`[airdrop] Sent ${usdc} USDC → ${wallet_address} tx=${data.tx_signature}`);
+
+    res.json({
+      success: true,
+      amount_usdc: usdc,
+      wallet_address,
+      tx_signature: data.tx_signature,
+      is_simulated: data.is_simulated ?? false,
+      solana_explorer_url: data.tx_signature
+        ? `https://explorer.solana.com/tx/${data.tx_signature}?cluster=devnet`
+        : null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? "Airdrop failed" });
+  }
+});
+
 export default router;

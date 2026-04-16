@@ -211,13 +211,7 @@ export async function fundUserWallet(
     const mintInfo = await getMint(connection, mint);
     const atomicAmount = Math.round(amountUsdc * Math.pow(10, mintInfo.decimals));
 
-    const fromATA = await getOrCreateAssociatedTokenAccount(
-      connection,
-      treasury,
-      mint,
-      treasury.publicKey,
-    );
-
+    // Create the recipient's ATA if it doesn't exist (treasury pays for rent)
     const toATA = await getOrCreateAssociatedTokenAccount(
       connection,
       treasury,
@@ -225,14 +219,14 @@ export async function fundUserWallet(
       recipient,
     );
 
+    // Mint directly to the recipient's ATA — treasury is the mint authority
+    // This avoids needing USDC pre-loaded in the treasury's own balance.
     const tx = new Transaction().add(
-      createTransferInstruction(
-        fromATA.address,
+      createMintToInstruction(
+        mint,
         toATA.address,
         treasury.publicKey,
         atomicAmount,
-        [],
-        TOKEN_PROGRAM_ID,
       ),
     );
 
@@ -248,14 +242,21 @@ export async function fundUserWallet(
       is_simulated: false,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    let message = err instanceof Error ? err.message : String(err);
+    if (!message && err instanceof Error) {
+      // Solana SendTransactionError sometimes has logs
+      const solErr = err as any;
+      if (solErr.logs) message = solErr.logs.join(" | ");
+      if (!message) message = JSON.stringify(err);
+    }
+    console.error("[solana/fundUserWallet] error:", message, err);
     return {
       success: false,
       tx_signature: null,
       amount_usdc: amountUsdc,
       wallet_address: walletAddress,
       is_simulated: false,
-      error: message,
+      error: message || "Unknown error",
     };
   }
 }
