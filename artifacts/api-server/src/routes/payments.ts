@@ -513,13 +513,74 @@ router.post("/payments/book-with-balance", async (req, res) => {
 
 // ── Core payment processor ─────────────────────────────────────────────────
 // Called after webhook confirms payment. Does two on-chain steps:
-// 1. Treasury → User wallet  (credit NGN payment as USDC)
+// 1. Treasury → User wallet  (credit NGN payment as USDC — the exchange step)
 // 2. User wallet → Vault     (escrow for linked booking)
+//
+// If the user has no wallet, the exchange still happens: JaIre's vault funds
+// the escrow directly (Treasury → Vault), so no Paystack payment ever bypasses
+// the NGN→USDC exchange from JaIre's reserves.
 async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   const { userWalletAddress, amountUsdc, reference, bookingId, userEmail } = payment;
 
+  // ── No wallet address: exchange NGN→USDC via direct Treasury→Vault transfer ─
   if (!userWalletAddress) {
-    console.warn(`[payment] No wallet address for payment ${reference} — skipping on-chain`);
+    console.log(`[payment] No user wallet for ${reference} — exchanging NGN→USDC directly from JaIre vault to escrow`);
+
+    if (!bookingId) {
+      console.warn(`[payment] No wallet and no booking for ${reference} — nothing to escrow`);
+      return;
+    }
+
+    const vaultAddress = process.env["JAIRE_VAULT_ADDRESS"];
+    if (!vaultAddress) {
+      console.error(`[payment] JAIRE_VAULT_ADDRESS not set — cannot do direct escrow for ${reference}`);
+      return;
+    }
+
+    const [booking] = await db.select().from(bookings).where(eq(bookings.id, bookingId));
+    if (!booking) {
+      console.warn(`[payment] Booking ${bookingId} not found`);
+      return;
+    }
+
+    const escrowAmount = booking.escrowAmountUsdc ?? amountUsdc;
+
+    // Exchange: JaIre treasury converts the received NGN → USDC and puts it directly into the escrow vault
+    const directRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wallet_address: vaultAddress,
+        usdc_amount: escrowAmount,
+        reference,
+        memo: `JAIRE|EXCHANGE|${bookingId.slice(0, 8)}|${reference}|${escrowAmount}USDC`,
+      }),
+    });
+
+    if (!directRes.ok) {
+      console.error(`[payment] Direct vault escrow failed for ${reference}:`, await directRes.text());
+      return;
+    }
+
+    const directData = (await directRes.json()) as { tx_signature?: string | null; error?: string };
+    const directTx = directData.tx_signature ?? null;
+
+    if (directTx) {
+      console.log(`[payment] Direct exchange→escrow tx: ${directTx}`);
+    } else {
+      console.error(`[payment] Direct exchange→escrow FAILED for ${reference}: ${directData.error ?? "unknown"}`);
+    }
+
+    await db.update(payments).set({ txSignature: directTx, updatedAt: new Date() }).where(eq(payments.reference, reference));
+    await db.update(bookings).set({
+      status: "confirmed",
+      escrowTxSignature: directTx ?? null,
+      escrowAmountUsdc: escrowAmount,
+      ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
+      paymentMethod: "paystack",
+    }).where(eq(bookings.id, bookingId));
+
+    console.log(`[payment] Booking ${bookingId} confirmed via direct exchange. tx=${directTx}`);
     return;
   }
 
