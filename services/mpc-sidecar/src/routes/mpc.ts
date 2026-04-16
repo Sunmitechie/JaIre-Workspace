@@ -387,7 +387,7 @@ router.post("/fund-by-address", async (req: Request, res: Response) => {
     if (!wallet_address) { res.status(400).json({ error: "wallet_address required" }); return; }
     if (!usdc_amount || usdc_amount <= 0) { res.status(400).json({ error: "usdc_amount must be > 0" }); return; }
 
-    const result = await vaultFundUser(wallet_address, usdc_amount, mint);
+    const result = await fundUserWallet(wallet_address, usdc_amount, mint);
 
     if (result.tx_signature) {
       console.log(

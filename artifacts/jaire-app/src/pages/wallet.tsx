@@ -1,136 +1,221 @@
-import { useState } from "react";
-import { useGetWalletBalance, useFundWallet } from "@workspace/api-client-react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { formatNGN, formatUSDC, ngnToUsdc } from "@/lib/currency";
-import { Wallet, ArrowDownToLine, Copy, ExternalLink, ShieldCheck } from "lucide-react";
+import { formatNGN, formatUSDC } from "@/lib/currency";
+import { Wallet, Copy, ExternalLink, ShieldCheck, Zap, Loader2, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { useQueryClient } from "@tanstack/react-query";
+import { getUser } from "@/lib/auth";
+
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+const MARKET_RATE = 1600;
+
+interface WalletBalance {
+  wallet_address: string;
+  sol_balance: number;
+  usdc_balance: number;
+  usdc_mint: string;
+}
 
 export default function WalletPage() {
-  const [fundAmount, setFundAmount] = useState("5000");
-  const { data: wallet, isLoading } = useGetWalletBalance();
-  const fundMutation = useFundWallet();
-  const queryClient = useQueryClient();
+  const user = getUser();
+  const [balance, setBalance] = useState<WalletBalance | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [airdropping, setAirdropping] = useState(false);
+  const [lastAirdropTx, setLastAirdropTx] = useState<string | null>(null);
 
-  const handleFund = () => {
-    const amount = Number(fundAmount);
-    if (isNaN(amount) || amount <= 0) return;
+  const fetchBalance = useCallback(async () => {
+    if (!user?.walletAddress) { setLoading(false); return; }
+    try {
+      const r = await fetch(`${BASE}/mpc/balance/${user.walletAddress}`, { cache: "no-store" });
+      if (r.ok) setBalance(await r.json());
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }, [user?.walletAddress]);
 
-    fundMutation.mutate(
-      { data: { amount_ngn: amount, payment_method: "paystack" } },
-      {
-        onSuccess: (res) => {
-          toast.success("Wallet funded successfully!", {
-            description: `Added ${res.usdc_minted.toFixed(2)} USDC.`
-          });
-          queryClient.invalidateQueries();
-          setFundAmount("");
-        },
-        onError: () => {
-          toast.error("Failed to fund wallet");
-        }
-      }
-    );
-  };
+  // Sync verifierId to DB on mount so wallet booking path works
+  useEffect(() => {
+    if (!user?.idToken) return;
+    fetch(`${BASE}/api/wallet/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ web3auth_token: user.idToken, email: user.email, name: user.name }),
+    }).catch(() => {});
+  }, [user?.idToken]);
+
+  useEffect(() => { fetchBalance(); }, [fetchBalance]);
 
   const copyAddress = () => {
-    if (wallet?.public_key) {
-      navigator.clipboard.writeText(wallet.public_key);
-      toast.success("Address copied to clipboard");
+    if (user?.walletAddress) {
+      navigator.clipboard.writeText(user.walletAddress);
+      toast.success("Address copied");
     }
   };
 
-  if (isLoading) {
-    return <div className="container py-12 max-w-2xl"><Skeleton className="h-64 w-full rounded-3xl" /></div>;
-  }
+  const openExplorer = () => {
+    if (user?.walletAddress) {
+      window.open(`https://explorer.solana.com/address/${user.walletAddress}?cluster=devnet`, "_blank");
+    }
+  };
 
-  if (!wallet?.connected) {
+  const handleAirdrop = async () => {
+    if (!user?.walletAddress) return;
+    setAirdropping(true);
+    try {
+      const r = await fetch(`${BASE}/api/wallet/devnet-airdrop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet_address: user.walletAddress, amount_usdc: 5 }),
+      });
+      const data = await r.json() as { success?: boolean; tx_signature?: string; is_simulated?: boolean; amount_usdc?: number; error?: string };
+      if (!r.ok || !data.success) throw new Error(data.error ?? "Airdrop failed");
+
+      setLastAirdropTx(data.tx_signature ?? null);
+      toast.success(`+${data.amount_usdc} USDC received!`, {
+        description: data.is_simulated
+          ? "Simulated on devnet"
+          : data.tx_signature
+            ? `Tx: ${data.tx_signature.slice(0, 12)}…`
+            : undefined,
+        action: data.tx_signature ? {
+          label: "View on Solana",
+          onClick: () => window.open(`https://explorer.solana.com/tx/${data.tx_signature}?cluster=devnet`, "_blank"),
+        } : undefined,
+      });
+      await fetchBalance();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Airdrop failed");
+    } finally {
+      setAirdropping(false);
+    }
+  };
+
+  if (!user) {
     return (
       <div className="container py-24 text-center max-w-md mx-auto">
-        <div className="w-20 h-20 bg-secondary rounded-full flex items-center justify-center mx-auto mb-6">
+        <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6"
+          style={{ background: "rgba(255,255,255,0.06)" }}>
           <Wallet className="w-10 h-10 text-muted-foreground" />
         </div>
-        <h2 className="text-2xl font-bold mb-3">Wallet Not Connected</h2>
-        <p className="text-muted-foreground mb-8">Please connect your wallet from the top navigation to access this page.</p>
+        <h2 className="text-2xl font-bold mb-3">Sign in first</h2>
+        <p className="text-muted-foreground">Connect your wallet from the top navigation to access this page.</p>
       </div>
     );
   }
 
+  if (loading) {
+    return <div className="container py-12 max-w-2xl"><Skeleton className="h-72 w-full rounded-3xl" /></div>;
+  }
+
+  const ngnEquiv = balance ? Math.round(balance.usdc_balance * MARKET_RATE) : 0;
+
   return (
-    <div className="container py-12 px-4 max-w-2xl mx-auto">
-      <h1 className="text-3xl font-bold mb-8">Web3 Wallet</h1>
+    <div className="container py-12 px-4 max-w-2xl mx-auto space-y-6">
+      <h1 className="text-3xl font-bold">JaIre Wallet</h1>
 
-      <div className="bg-gradient-to-br from-primary/20 via-card to-card rounded-3xl p-8 border border-border/50 mb-8 relative overflow-hidden">
-        <div className="absolute top-0 right-0 p-6 opacity-10 pointer-events-none">
-          <ShieldCheck className="w-32 h-32 text-primary" />
+      {/* Balance card */}
+      <div
+        className="rounded-3xl p-8 relative overflow-hidden"
+        style={{ background: "linear-gradient(135deg, rgba(124,58,237,0.18) 0%, rgba(255,255,255,0.03) 100%)", border: "1px solid rgba(124,58,237,0.3)" }}
+      >
+        <div className="absolute top-0 right-0 p-8 opacity-[0.07] pointer-events-none">
+          <ShieldCheck className="w-40 h-40 text-purple-400" />
         </div>
-        
-        <div className="relative z-10">
-          <div className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-2">Available Balance</div>
-          <div className="text-5xl font-bold text-foreground mb-2 tracking-tighter">
-            {formatUSDC(wallet.balance_usdc)}
-          </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span className="font-mono bg-background/50 px-2 py-1 rounded">Solana: {wallet.balance_sol.toFixed(4)} SOL</span>
-          </div>
 
-          <div className="mt-8 pt-6 border-t border-white/10 flex items-center justify-between">
+        <div className="relative z-10">
+          <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-2">Available Balance</div>
+          <div className="text-5xl font-bold tracking-tighter mb-1">{formatUSDC(balance?.usdc_balance ?? 0)}</div>
+          <div className="text-sm text-muted-foreground mb-6">≈ {formatNGN(ngnEquiv)} · {(balance?.sol_balance ?? 0).toFixed(4)} SOL</div>
+
+          <div className="pt-5 border-t border-white/10 flex items-center justify-between">
             <div>
-              <div className="text-xs text-muted-foreground mb-1 uppercase">Address</div>
-              <div className="font-mono text-sm">{wallet.public_key.slice(0, 8)}...{wallet.public_key.slice(-8)}</div>
+              <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">Solana Address (Devnet)</div>
+              <div className="font-mono text-sm">
+                {user.walletAddress
+                  ? `${user.walletAddress.slice(0, 8)}…${user.walletAddress.slice(-8)}`
+                  : "Not connected"}
+              </div>
             </div>
             <div className="flex gap-2">
-              <Button size="icon" variant="secondary" onClick={copyAddress} className="rounded-xl">
+              <button
+                onClick={copyAddress}
+                className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:scale-105"
+                style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}
+                title="Copy address"
+              >
                 <Copy className="w-4 h-4" />
-              </Button>
-              <Button size="icon" variant="secondary" className="rounded-xl">
+              </button>
+              <button
+                onClick={openExplorer}
+                className="w-9 h-9 rounded-xl flex items-center justify-center transition-all hover:scale-105"
+                style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}
+                title="View on Solana Explorer"
+              >
                 <ExternalLink className="w-4 h-4" />
-              </Button>
+              </button>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="bg-card rounded-3xl border border-border p-8">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center text-accent">
-            <ArrowDownToLine className="w-5 h-5" />
+      {/* Devnet airdrop */}
+      <div
+        className="rounded-3xl p-6"
+        style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}
+      >
+        <div className="flex items-start gap-4">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+            style={{ background: "rgba(0,255,163,0.1)", border: "1px solid rgba(0,255,163,0.2)" }}>
+            <Zap className="w-5 h-5 text-emerald-400" />
           </div>
-          <div>
-            <h3 className="text-xl font-bold">Fund with Paystack</h3>
-            <p className="text-sm text-muted-foreground">Convert NGN to USDC instantly</p>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm font-medium text-muted-foreground mb-1.5 block">Amount (NGN)</label>
-            <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 font-mono text-muted-foreground">₦</span>
-              <Input 
-                type="number" 
-                className="pl-8 h-14 text-lg bg-background" 
-                value={fundAmount}
-                onChange={(e) => setFundAmount(e.target.value)}
-              />
+          <div className="flex-1">
+            <div className="font-bold mb-0.5">Get Test USDC (Devnet)</div>
+            <div className="text-sm text-muted-foreground mb-4">
+              Receive 5 USDC from the JaIre treasury on Solana devnet. Use it to book a workspace and see the on-chain escrow transaction.
             </div>
-          </div>
-          
-          <div className="bg-secondary/50 rounded-xl p-4 flex justify-between items-center">
-            <span className="text-sm text-muted-foreground">You will receive approx.</span>
-            <span className="font-bold text-accent font-mono">{formatUSDC(ngnToUsdc(Number(fundAmount) || 0))}</span>
-          </div>
 
-          <Button 
-            className="w-full h-14 text-lg mt-4" 
-            onClick={handleFund}
-            disabled={fundMutation.isPending || !fundAmount || Number(fundAmount) <= 0}
-          >
-            {fundMutation.isPending ? "Processing..." : "Fund Wallet"}
-          </Button>
+            {lastAirdropTx && (
+              <a
+                href={`https://explorer.solana.com/tx/${lastAirdropTx}?cluster=devnet`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 text-xs text-emerald-400 mb-3 hover:underline"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Last airdrop confirmed on-chain · View tx
+              </a>
+            )}
+
+            <Button
+              onClick={handleAirdrop}
+              disabled={airdropping || !user.walletAddress}
+              className="h-11 px-6 rounded-xl font-semibold"
+              style={{
+                background: "linear-gradient(135deg, rgba(0,255,163,0.15) 0%, rgba(0,200,130,0.2) 100%)",
+                border: "1px solid rgba(0,255,163,0.35)",
+                color: "#00FFA3",
+              }}
+            >
+              {airdropping ? (
+                <><Loader2 className="w-4 h-4 animate-spin mr-2" />Sending…</>
+              ) : (
+                <><Zap className="w-4 h-4 mr-2" />Airdrop 5 USDC</>
+              )}
+            </Button>
+          </div>
         </div>
+      </div>
+
+      {/* How it works */}
+      <div
+        className="rounded-2xl p-5 text-sm text-muted-foreground"
+        style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)" }}
+      >
+        <div className="font-semibold text-foreground mb-2">How your wallet works</div>
+        <ul className="space-y-1.5 list-disc list-inside">
+          <li>Your wallet is created invisibly when you sign in — no seed phrases, no MetaMask</li>
+          <li>When you pay with Paystack, NGN converts to USDC and goes into your wallet</li>
+          <li>When you book, USDC is locked in escrow on Solana — fully on-chain</li>
+          <li>At checkout, only the time you used is billed — the rest is refunded to this wallet</li>
+        </ul>
       </div>
     </div>
   );
