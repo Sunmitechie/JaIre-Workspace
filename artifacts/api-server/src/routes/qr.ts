@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { createHmac, randomUUID } from "crypto";
 import { db } from "@workspace/db";
-import { workspaces, bookings, activityEvents, users } from "@workspace/db";
+import { workspaces, bookings, activityEvents, users, organizations } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 
 const router = Router();
@@ -240,6 +240,37 @@ router.post("/checkout", async (req, res) => {
       }
     } else if (refundUsdc <= 0.000001) {
       console.log(`[checkout] Billed = escrow — no refund needed`);
+    }
+
+    // ── Vault → Org wallet (85% revenue share) ─────────────────────────────
+    // Fire-and-forget: look up the org that owns this workspace and pay them
+    if (billedUsdc > 0.0001 && ws.orgId) {
+      (async () => {
+        try {
+          const [org] = await db.select({ ownerWalletAddress: organizations.ownerWalletAddress })
+            .from(organizations).where(eq(organizations.id, ws.orgId!)).limit(1);
+
+          if (org?.ownerWalletAddress) {
+            const orgShare = parseFloat((billedUsdc * 0.85).toFixed(6));
+            const memo = `JAIRE|SETTLE|${booking.id.slice(0, 8)}|${orgShare}USDC|85PCT`;
+            const payRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ wallet_address: org.ownerWalletAddress, usdc_amount: orgShare, memo }),
+            });
+            if (payRes.ok) {
+              const pd = (await payRes.json()) as { tx_signature?: string | null };
+              console.log(`[checkout] Org ${ws.orgId} paid ${orgShare} USDC (85%). tx=${pd.tx_signature}`);
+            } else {
+              console.warn(`[checkout] Org payment failed:`, await payRes.text());
+            }
+          } else {
+            console.log(`[checkout] Workspace ${ws.id} has no org wallet — skipping 85% settlement`);
+          }
+        } catch (e) {
+          console.warn(`[checkout] Org settlement error:`, e);
+        }
+      })();
     }
 
     // Update booking

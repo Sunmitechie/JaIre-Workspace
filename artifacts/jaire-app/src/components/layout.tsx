@@ -1,3 +1,4 @@
+import jaireLogo from "../assets/jaire-logo.png";
 import { Link, useLocation } from "wouter";
 import { Building2, History, MessageSquare, LogOut, Menu, X, Wallet, LayoutDashboard, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -57,17 +58,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-40 w-full border-b border-white/6 bg-background/80 backdrop-blur-xl">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-8">
-            <Link href={user ? "/dashboard" : "/"} className="flex items-center gap-2.5 group">
-              <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center transition-all group-hover:scale-105"
-                style={{
-                  background: "linear-gradient(135deg, rgba(255,170,0,0.25) 0%, rgba(255,170,0,0.1) 100%)",
-                  border: "1px solid rgba(255,170,0,0.4)",
-                }}
-              >
-                <span className="text-xs font-bold text-gradient-gold leading-none">JI</span>
-              </div>
-              <span className="font-bold text-xl tracking-tight hidden sm:block">JaIre</span>
+            <Link href={user ? "/dashboard" : "/"} className="flex items-center gap-2 group">
+              <img
+                src={jaireLogo}
+                alt="JaIre"
+                className="h-9 w-auto transition-all group-hover:scale-105"
+              />
             </Link>
 
             {user && (

@@ -8,6 +8,7 @@ import walletRouter from "./wallet";
 import qrRouter from "./qr";
 import paymentsRouter from "./payments";
 import orgRouter from "./org";
+import jaieRouter from "./jaie";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use("/wallet", walletRouter);
 router.use("/qr", qrRouter);
 router.use(paymentsRouter);
 router.use("/org", orgRouter);
+router.use("/jaie", jaieRouter);
 
 export default router;
