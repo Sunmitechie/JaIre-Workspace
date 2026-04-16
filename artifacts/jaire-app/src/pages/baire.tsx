@@ -43,6 +43,11 @@ function extractPaymentUrl(text: string): string | null {
   return match?.[0] ?? null;
 }
 
+function extractSolanaExplorerUrl(text: string): string | null {
+  const match = text.match(/https?:\/\/explorer\.solana\.com\/tx\/[^\s)>"]+/i);
+  return match?.[0] ?? null;
+}
+
 async function playAudioBlob(blob: Blob, audioRef: React.MutableRefObject<HTMLAudioElement | null>): Promise<void> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
@@ -523,6 +528,7 @@ export default function Baire() {
             <div className="max-w-2xl mx-auto space-y-4">
               {messages.map((msg, i) => {
                 const paymentUrl = msg.role === "baire" && !msg.isStreaming ? extractPaymentUrl(msg.content) : null;
+                const solanaUrl = msg.role === "baire" && !msg.isStreaming ? extractSolanaExplorerUrl(msg.content) : null;
                 return (
                   <div key={i} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
                     {msg.role === "baire" && (
@@ -549,12 +555,22 @@ export default function Baire() {
                       {msg.isStreaming && msg.content && (
                         <span className="inline-block w-0.5 h-4 bg-current opacity-60 ml-0.5 animate-pulse align-bottom" />
                       )}
+                      {/* Paystack payment button */}
                       {paymentUrl && (
                         <a href={paymentUrl} target="_blank" rel="noopener noreferrer"
                           className="mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold transition-all hover:scale-[1.02] active:scale-95 w-fit"
                           style={{ background: "linear-gradient(135deg, hsl(43 100% 50%), hsl(38 100% 44%))", color: "hsl(220 40% 5%)" }}>
                           <ExternalLink className="w-3.5 h-3.5" />
                           Pay Now
+                        </a>
+                      )}
+                      {/* Solana Explorer on-chain tx button */}
+                      {solanaUrl && (
+                        <a href={solanaUrl} target="_blank" rel="noopener noreferrer"
+                          className="mt-3 flex items-center gap-2 px-3 py-2 rounded-xl text-[12px] font-semibold font-mono transition-all hover:scale-[1.02] active:scale-95 w-fit"
+                          style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.3)", color: "#34d399" }}>
+                          <ExternalLink className="w-3 h-3 shrink-0" />
+                          View on Solana Explorer
                         </a>
                       )}
                     </div>
