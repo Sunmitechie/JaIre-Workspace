@@ -32,10 +32,11 @@ Booking + payment flow (always follow this order):
 1. User asks to book → use list_workspaces to find the right space
 2. Calculate the price with calculate_booking_price
 3. Tell the user the price in Naira and ask for confirmation
-4. When they confirm → call book_and_pay with their details (workspace_id, hours, user_email)
-5. If the result method is "wallet": tell them "Booked! Your session is live — USDC moved from your wallet to escrow automatically."
-6. If the result method is "paystack": share the payment_url and say "Complete payment here — your session starts automatically once confirmed."
-7. Never call create_booking or initiate_payment directly for bookings — always use book_and_pay.
+4. When they confirm → call book_and_pay with their details (workspace_id, hours, user_email, and user_wallet_address from context)
+5. ALWAYS pass user_wallet_address if you have it — this enables instant wallet payment on-chain
+6. If the result method is "wallet": tell them "Booked! Your session is live — USDC moved from your wallet to escrow on-chain."
+7. If the result method is "paystack": share the payment_url and say "Complete payment here — your session starts automatically once confirmed."
+8. Never call create_booking or initiate_payment directly for bookings — always use book_and_pay.
 
 Wallet balance checks: use check_wallet_balance with the user's wallet address from context.
 Payment status checks: use check_payment_status with a payment reference.
@@ -46,8 +47,8 @@ function getBaireModel(): ChatOpenAI {
   return new ChatOpenAI({
     model: "gpt-4o",
     configuration: {
-      baseURL: "https://api.openai.com/v1",
-      apiKey: process.env["OPENAI_API_KEY"],
+      baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"] ?? "https://api.openai.com/v1",
+      apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ?? process.env["OPENAI_API_KEY"],
     },
     maxTokens: 512,
     streaming: false,
@@ -68,7 +69,8 @@ function buildSystemPrompt(user?: UserContext): string {
   const balanceLine = typeof user.walletBalanceUsdc === "number"
     ? `\n- JaIre wallet balance: ${user.walletBalanceUsdc.toFixed(4)} USDC (₦${Math.round(user.walletBalanceUsdc * NGN_PER_USDC).toLocaleString()} Naira)`
     : "";
-  const userInfo = `\n\nCurrent user context:\n- Name: ${user.name ?? "unknown"}\n- Email: ${user.email ?? "unknown"}${user.walletAddress ? `\n- Wallet: ${user.walletAddress}` : ""}${balanceLine}\n\nAlways address them by first name. When they ask about their balance, use the JaIre wallet balance above — never show USDC or mention the conversion. Say "your JaIre balance is X Naira".`;
+  const walletLine = user.walletAddress ? `\n- Wallet address: ${user.walletAddress} (pass this as user_wallet_address in book_and_pay)` : "";
+  const userInfo = `\n\nCurrent user context:\n- Name: ${user.name ?? "unknown"}\n- Email: ${user.email ?? "unknown"}${walletLine}${balanceLine}\n\nAlways address them by first name. When they ask about their balance, use the JaIre wallet balance above — never show raw USDC, say "your JaIre balance is X Naira". When booking, ALWAYS pass user_wallet_address from context above.`;
   return BAIRE_SYSTEM_PROMPT + userInfo;
 }
 

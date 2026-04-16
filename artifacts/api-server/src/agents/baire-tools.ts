@@ -206,8 +206,9 @@ export const bookAndPayTool = new DynamicStructuredTool({
     planned_duration_hours: z.number().describe("How many hours to book"),
     user_name: z.string().optional().describe("User's name"),
     user_email: z.string().describe("User's email address — required"),
+    user_wallet_address: z.string().optional().describe("User's Solana wallet address from context — pass this to enable wallet payment"),
   }),
-  func: async ({ workspace_id, planned_duration_hours, user_name, user_email }) => {
+  func: async ({ workspace_id, planned_duration_hours, user_name, user_email, user_wallet_address }) => {
     const ws = WORKSPACES.find((w) => w.id === workspace_id);
     try {
       const res = await fetch(`${API_BASE}/payments/book-with-balance`, {
@@ -218,6 +219,7 @@ export const bookAndPayTool = new DynamicStructuredTool({
           planned_duration_hours,
           user_email,
           user_name,
+          user_wallet_address,
           workspace_fallback: ws
             ? {
                 name: ws.name,
