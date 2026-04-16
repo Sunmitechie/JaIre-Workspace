@@ -8,6 +8,11 @@ import {
   elevenLabsSpeechToText,
   elevenLabsTextToSpeechStream,
 } from "../lib/elevenlabs.js";
+import {
+  textToSpeech as openaiTTS,
+  speechToText as openaiSTT,
+  ensureCompatibleFormat,
+} from "@workspace/integrations-openai-ai-server/audio";
 
 const router = Router();
 
@@ -129,18 +134,20 @@ router.post(
       let userTranscript: string;
       try {
         userTranscript = await elevenLabsSpeechToText(file.buffer, file.mimetype || "audio/webm");
-      } catch (sttErr: any) {
-        // STT service unavailable — prompt user to type instead
-        const isPayment = sttErr?.message?.includes("402") || sttErr?.message?.includes("payment");
-        sendEvent(res, {
-          type: "agent_text",
-          content: isPayment
-            ? "Voice transcription is temporarily unavailable. Please tap the keyboard icon to type your message instead."
-            : `Voice unavailable: ${sttErr?.message ?? "STT error"}. Please use text input.`,
-        });
-        sendEvent(res, { type: "done" });
-        res.end();
-        return;
+      } catch {
+        // ElevenLabs STT failed — fall back to OpenAI transcription
+        try {
+          const { buffer: wavBuffer, format } = await ensureCompatibleFormat(file.buffer);
+          userTranscript = await openaiSTT(wavBuffer, format);
+        } catch (sttErr: any) {
+          sendEvent(res, {
+            type: "agent_text",
+            content: "Voice transcription is temporarily unavailable. Please tap the keyboard icon to type your message instead.",
+          });
+          sendEvent(res, { type: "done" });
+          res.end();
+          return;
+        }
       }
 
       sendEvent(res, { type: "user_transcript", content: userTranscript });
@@ -193,12 +200,23 @@ router.post("/baire/tts", async (req, res) => {
   const { text } = req.body as { text?: string };
   if (!text?.trim()) return res.status(400).json({ error: "text is required" });
 
+  // Try ElevenLabs first; fall back to OpenAI if plan doesn't support it
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of elevenLabsTextToSpeechStream(text)) {
       chunks.push(chunk);
     }
     const audioBuffer = Buffer.concat(chunks);
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", audioBuffer.length);
+    res.send(audioBuffer);
+    return;
+  } catch {
+    // ElevenLabs failed — fall through to OpenAI
+  }
+
+  try {
+    const audioBuffer = await openaiTTS(text, "nova", "mp3");
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Content-Length", audioBuffer.length);
     res.send(audioBuffer);

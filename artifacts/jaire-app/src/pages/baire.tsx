@@ -91,11 +91,21 @@ export default function Baire() {
     initConversation();
   }, [initConversation]);
 
+  // Sync verifierId to DB so wallet booking path works (same as book/wallet pages)
+  useEffect(() => {
+    if (!user?.idToken) return;
+    fetch(`${BASE_URL}/api/wallet/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ web3auth_token: user.idToken, email: user.email, name: user.name }),
+    }).catch(() => {});
+  }, [user?.idToken]);
+
   useEffect(() => {
     if (!user?.walletAddress) return;
-    fetch(`${BASE_URL}/api/wallet/balance?address=${user.walletAddress}`)
+    fetch(`${BASE_URL}/mpc/balance/${user.walletAddress}`, { cache: "no-store" })
       .then((r) => r.json())
-      .then((d) => { if (typeof d.balance_usdc === "number") setWalletBalanceUsdc(d.balance_usdc); })
+      .then((d: any) => { if (typeof d.usdc_balance === "number") setWalletBalanceUsdc(d.usdc_balance); })
       .catch(() => {});
   }, [user?.walletAddress]);
 
