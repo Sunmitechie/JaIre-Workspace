@@ -243,7 +243,12 @@ export const bookAndPayTool = new DynamicStructuredTool({
         escrow_tx?: string;
         paystack_url?: string;
         paystack_reference?: string;
-        amount_ngn: number;
+        total_ngn?: number;
+        total_usdc?: number;
+        charge_ngn?: number;
+        charge_usdc?: number;
+        amount_ngn?: number;
+        amount_usdc?: number;
         wallet_balance_usdc: number;
         shortfall_ngn?: number;
       };
@@ -262,9 +267,18 @@ export const bookAndPayTool = new DynamicStructuredTool({
           solana_explorer_url: explorerUrl,
           amount_usdc: data.amount_usdc,
           amount_ngn: data.amount_ngn,
-          message: `Booking confirmed! Your session at ${data.workspace_name} is live — ${data.amount_usdc?.toFixed(3)} USDC moved from your wallet to on-chain escrow.${explorerUrl ? ` Verify on Solana Explorer: ${explorerUrl}` : ""} Head to your session screen to track time. Booking ID: ${data.booking_id}`,
+          wallet_balance_usdc: data.wallet_balance_usdc,
+          instructions: "Tell the user their booking is confirmed and to scan the QR code when they arrive at the space — that starts their session timer. Share the Solana Explorer link.",
+          message: `Booking confirmed! ${data.amount_usdc?.toFixed(3)} USDC moved from wallet to on-chain escrow for ${data.workspace_name}.${explorerUrl ? ` Verify: ${explorerUrl}` : ""} Booking ID: ${data.booking_id}`,
         });
       }
+
+      // Paystack top-up flow — give Baire all the numbers so she can narrate clearly
+      const totalNgn = data.total_ngn ?? data.amount_ngn ?? 0;
+      const totalUsdc = data.total_usdc ?? 0;
+      const chargeNgn = data.charge_ngn ?? totalNgn;
+      const walletNgn = Math.round(data.wallet_balance_usdc * DISPLAY_RATE);
+      const hasPartialBalance = data.wallet_balance_usdc > 0;
 
       return JSON.stringify({
         success: true,
@@ -273,8 +287,18 @@ export const bookAndPayTool = new DynamicStructuredTool({
         workspace_name: data.workspace_name,
         booking_status: "pending_payment",
         payment_url: data.paystack_url,
-        amount_ngn: data.amount_ngn,
-        message: `Your booking at ${data.workspace_name} is held! Complete payment here: ${data.paystack_url} — your USDC will be credited and the session starts automatically.`,
+        total_cost_ngn: totalNgn,
+        total_cost_usdc: totalUsdc,
+        wallet_balance_usdc: data.wallet_balance_usdc,
+        wallet_balance_ngn: walletNgn,
+        charge_ngn: chargeNgn,
+        has_partial_balance: hasPartialBalance,
+        instructions: hasPartialBalance
+          ? `Tell the user they already have ₦${walletNgn.toLocaleString()} (${data.wallet_balance_usdc.toFixed(3)} USDC) in their JaIre wallet. The booking costs ₦${totalNgn.toLocaleString()} total, so they only need to top up ₦${chargeNgn.toLocaleString()} more. Once they pay, the booking auto-confirms and they should scan in on arrival.`
+          : `Tell the user the booking costs ₦${totalNgn.toLocaleString()} and they need to complete the Paystack payment. Once done, their booking auto-confirms and they should scan in on arrival.`,
+        message: hasPartialBalance
+          ? `Booking held for ${data.workspace_name}. Wallet has ${data.wallet_balance_usdc.toFixed(3)} USDC (₦${walletNgn.toLocaleString()}). Total cost ₦${totalNgn.toLocaleString()} — only top up ₦${chargeNgn.toLocaleString()} here: ${data.paystack_url}`
+          : `Booking held for ${data.workspace_name}. Pay ₦${totalNgn.toLocaleString()} here: ${data.paystack_url} — booking auto-confirms once done.`,
       });
     } catch (err: any) {
       return JSON.stringify({ error: `Could not complete booking: ${err?.message}` });

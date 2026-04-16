@@ -433,13 +433,16 @@ router.post("/payments/book-with-balance", async (req, res) => {
       }
     }
 
-    // Path B: insufficient balance or escrow failed → Paystack
+    // Path B: insufficient balance or escrow failed → Paystack top-up (shortfall only)
+    // Charge only the deficit so the user's existing USDC is used towards the booking
     const shortfallUsdc = Math.max(0, escrowUsdc - walletBalanceUsdc);
+    // If escrow failed with sufficient balance, fall back to charging the full amount
+    const chargeNgn = shortfallUsdc > 0 ? Math.ceil(shortfallUsdc * JAIRE_RATE) : amountNgn;
+    const chargeUsdc = shortfallUsdc > 0 ? shortfallUsdc : ngnToUsdc(amountNgn);
     const shortfallNgn = Math.round(shortfallUsdc * MARKET_RATE);
 
     const reference = generateRef();
-    const amountKobo = Math.round(amountNgn * 100);
-    const amountUsdc = ngnToUsdc(amountNgn);
+    const amountKobo = Math.round(chargeNgn * 100);
 
     const appUrl = process.env["APP_URL"] ?? `https://${process.env["REPLIT_DEV_DOMAIN"] ?? "localhost"}`;
 
@@ -468,13 +471,14 @@ router.post("/payments/book-with-balance", async (req, res) => {
       return res.status(502).json({ error: psData.message ?? "Paystack error" });
     }
 
-    // Record payment
+    // Record payment — amounts reflect what Paystack actually charges (shortfall only)
+    const amountUsdc = chargeUsdc;
     await db.insert(payments).values({
       bookingId,
       userEmail: user_email,
       userWalletAddress: userWalletAddress,
-      amountNgn,
-      amountUsdc,
+      amountNgn: chargeNgn,
+      amountUsdc: chargeUsdc,
       fxRate: JAIRE_RATE,
       fxSpreadPct: FX_SPREAD_PCT,
       reference,
@@ -490,8 +494,10 @@ router.post("/payments/book-with-balance", async (req, res) => {
       paystack_reference: reference,
       paystack_url: psData.data.authorization_url,
       paystack_access_code: psData.data.access_code,
-      amount_ngn: amountNgn,
-      amount_usdc: amountUsdc,
+      total_ngn: amountNgn,               // full booking cost shown to user
+      total_usdc: escrowUsdc,             // full USDC that will be escrowed
+      charge_ngn: chargeNgn,             // what Paystack actually charges (shortfall)
+      charge_usdc: chargeUsdc,           // USDC that will be credited from this payment
       wallet_balance_usdc: walletBalanceUsdc,
       shortfall_ngn: shortfallNgn,
     });
@@ -557,26 +563,27 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     const [userByWallet] = await db.select().from(users).where(eq(users.walletAddress, userWalletAddress));
     escrowUser = userByWallet ?? escrowUser;
   }
-  if (!escrowUser?.verifierId) {
-    console.warn(`[payment] No verifier_id found for ${userEmail} / ${userWalletAddress} — skipping on-chain escrow`);
-    // Still mark booking as confirmed (funds were received) so user isn't stuck
-    await db.update(bookings).set({
-      status: "confirmed",
-      escrowAmountUsdc: booking.escrowAmountUsdc ?? amountUsdc,
-      ngnAmountPaid: payment.amountNgn,
-      paymentMethod: "paystack",
-    }).where(eq(bookings.id, bookingId));
-    console.warn(`[payment] Booking ${bookingId} confirmed WITHOUT on-chain escrow (no verifier_id)`);
-    return;
-  }
-
-  // Get the booking to know the escrow amount
+  // Get the booking first (needed by both branches below)
   const [booking] = await db.select().from(bookings).where(eq(bookings.id, bookingId));
   if (!booking) {
     console.warn(`[payment] Booking ${bookingId} not found`);
     return;
   }
 
+  if (!escrowUser?.verifierId) {
+    console.warn(`[payment] No verifier_id found for ${userEmail} / ${userWalletAddress} — skipping on-chain escrow`);
+    // Still mark booking as confirmed (funds were received) so user isn't stuck
+    await db.update(bookings).set({
+      status: "confirmed",
+      escrowAmountUsdc: booking.escrowAmountUsdc ?? amountUsdc,
+      ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
+      paymentMethod: "paystack",
+    }).where(eq(bookings.id, bookingId));
+    console.warn(`[payment] Booking ${bookingId} confirmed WITHOUT on-chain escrow (no verifier_id)`);
+    return;
+  }
+
+  // Escrow the FULL booking amount from the wallet (existing balance + just-funded USDC)
   const escrowAmount = booking.escrowAmountUsdc ?? amountUsdc;
 
   console.log(`[payment] Step 2: User wallet → Vault (${escrowAmount} USDC escrow for booking ${bookingId})`);
@@ -585,7 +592,7 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      verifier_id: user.verifierId,
+      verifier_id: escrowUser.verifierId,   // fixed: was `user.verifierId` (ReferenceError)
       amount_usdc: escrowAmount,
     }),
   });
@@ -600,14 +607,14 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   console.log(`[payment] Escrow tx: ${escrowTx}`);
 
   // Update booking: funds locked in vault — CONFIRMED, waiting for QR scan-in.
-  // The timer only starts when the user physically scans in at the workspace.
+  // Preserve the booking's original ngnAmountPaid (total cost), not just the top-up shortfall.
   await db
     .update(bookings)
     .set({
       status: "confirmed",
       escrowTxSignature: escrowTx ?? null,
       escrowAmountUsdc: escrowAmount,
-      ngnAmountPaid: payment.amountNgn,
+      ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
       paymentMethod: "paystack",
     })
     .where(eq(bookings.id, bookingId));
