@@ -386,7 +386,11 @@ router.post("/payments/book-with-balance", async (req, res) => {
       const escrowRes = await fetch(`${MPC_SIDECAR}/mpc/internal/escrow`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ verifier_id: verifierId, amount_usdc: escrowUsdc }),
+        body: JSON.stringify({
+          verifier_id: verifierId,
+          amount_usdc: escrowUsdc,
+          memo: `JAIRE|ESCROW|${bookingId.slice(0, 8)}|${escrowUsdc}USDC|${user_email}`,
+        }),
       });
 
       if (!escrowRes.ok) {
@@ -528,6 +532,9 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
       wallet_address: userWalletAddress,
       usdc_amount: amountUsdc,
       reference,
+      memo: bookingId
+        ? `JAIRE|TOPUP|${bookingId.slice(0, 8)}|${reference}|${amountUsdc}USDC`
+        : `JAIRE|TOPUP|${reference}|${amountUsdc}USDC`,
     }),
   });
 
@@ -592,8 +599,9 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      verifier_id: escrowUser.verifierId,   // fixed: was `user.verifierId` (ReferenceError)
+      verifier_id: escrowUser.verifierId,
       amount_usdc: escrowAmount,
+      memo: `JAIRE|ESCROW|${bookingId.slice(0, 8)}|${escrowAmount}USDC|${userEmail}`,
     }),
   });
 

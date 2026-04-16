@@ -21,6 +21,7 @@ export const workspaces = pgTable("workspaces", {
   workspaceType: workspaceTypeEnum("workspace_type").notNull().default("hot_desk"),
   floor: integer("floor").notNull().default(1),
   qrSecret: text("qr_secret"),
+  orgId: text("org_id"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 

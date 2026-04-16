@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Layout } from "@/components/layout";
 import { isLoggedIn } from "@/lib/auth";
+import { isOrgLoggedIn } from "@/lib/org-auth";
 
 import Home from "@/pages/home";
 import Login from "@/pages/login";
@@ -18,6 +19,9 @@ import Bookings from "@/pages/bookings";
 import Baire from "@/pages/baire";
 import Analytics from "@/pages/analytics";
 import NotFound from "@/pages/not-found";
+import OrgSignup from "@/pages/org-signup";
+import OrgKyc from "@/pages/org-kyc";
+import OrgDashboard from "@/pages/org-dashboard";
 
 const queryClient = new QueryClient();
 
@@ -29,8 +33,25 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
   return <Component />;
 }
 
+function OrgProtectedRoute({ component: Component }: { component: React.ComponentType }) {
+  if (!isOrgLoggedIn()) {
+    return <Redirect to="/org/signup" />;
+  }
+  return <Component />;
+}
+
 function Router() {
-  return (
+  const [location] = useLocation();
+  const isOrgRoute = location.startsWith("/org/");
+
+  return isOrgRoute ? (
+    <Switch>
+      <Route path="/org/signup" component={OrgSignup} />
+      <Route path="/org/kyc">{() => <OrgProtectedRoute component={OrgKyc} />}</Route>
+      <Route path="/org/dashboard">{() => <OrgProtectedRoute component={OrgDashboard} />}</Route>
+      <Route component={NotFound} />
+    </Switch>
+  ) : (
     <Layout>
       <Switch>
         <Route path="/" component={Home} />
