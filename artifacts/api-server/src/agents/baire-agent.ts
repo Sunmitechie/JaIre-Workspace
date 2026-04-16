@@ -115,42 +115,17 @@ export async function* runBaireAgentStream(
   conversationHistory: Array<{ role: "user" | "assistant"; content: string }> = [],
   userContext?: UserContext
 ): AsyncGenerator<string> {
-  const model = new ChatOpenAI({
-    model: "llama-3.3-70b-versatile",
-    configuration: {
-      baseURL: "https://api.groq.com/openai/v1",
-      apiKey: process.env["GROQ_API_KEY"],
-    },
-    maxTokens: 512,
-    streaming: true,
-  });
+  // Groq streaming + LangGraph tool calling produces tool_use_failed errors.
+  // Use the non-streaming invoke path which is stable, then yield word-by-word
+  // for a natural streaming appearance in the UI.
+  const response = await runBaireAgent(userInput, conversationHistory, userContext);
+  if (!response) return;
 
-  const tools = [...baireTools, ...getSolanaTools()];
-  const agent = createReactAgent({ llm: model, tools });
-
-  const messages: BaseMessage[] = [new SystemMessage(buildSystemPrompt(userContext))];
-
-  for (const turn of conversationHistory) {
-    if (turn.role === "user") {
-      messages.push(new HumanMessage(turn.content));
-    } else {
-      messages.push(new AIMessage(turn.content));
-    }
-  }
-
-  messages.push(new HumanMessage(userInput));
-
-  const stream = agent.streamEvents({ messages }, { version: "v2" });
-
-  for await (const event of stream) {
-    if (
-      event.event === "on_chat_model_stream" &&
-      event.data?.chunk?.content
-    ) {
-      const content = event.data.chunk.content;
-      if (typeof content === "string" && content) {
-        yield content;
-      }
+  const words = response.split(/(\s+)/);
+  for (const chunk of words) {
+    if (chunk) {
+      yield chunk;
+      await new Promise((r) => setTimeout(r, 18));
     }
   }
 }

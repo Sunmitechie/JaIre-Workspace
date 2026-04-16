@@ -126,7 +126,22 @@ router.post(
     try {
       sendEvent(res, { type: "status", message: "Transcribing your voice..." });
 
-      const userTranscript = await elevenLabsSpeechToText(file.buffer, file.mimetype || "audio/webm");
+      let userTranscript: string;
+      try {
+        userTranscript = await elevenLabsSpeechToText(file.buffer, file.mimetype || "audio/webm");
+      } catch (sttErr: any) {
+        // STT service unavailable — prompt user to type instead
+        const isPayment = sttErr?.message?.includes("402") || sttErr?.message?.includes("payment");
+        sendEvent(res, {
+          type: "agent_text",
+          content: isPayment
+            ? "Voice transcription is temporarily unavailable. Please tap the keyboard icon to type your message instead."
+            : `Voice unavailable: ${sttErr?.message ?? "STT error"}. Please use text input.`,
+        });
+        sendEvent(res, { type: "done" });
+        res.end();
+        return;
+      }
 
       sendEvent(res, { type: "user_transcript", content: userTranscript });
       sendEvent(res, { type: "status", message: "Baire is thinking..." });

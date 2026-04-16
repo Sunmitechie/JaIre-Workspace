@@ -115,6 +115,7 @@ export default function BookWorkspace() {
           planned_duration_hours: hours,
           user_email: user.email,
           user_name: user.name ?? undefined,
+          user_wallet_address: user.walletAddress ?? undefined,
         }),
       });
 

@@ -114,6 +114,17 @@ export default function Login() {
     } catch { /* non-fatal — wallet setup continues in background */ }
 
     setStatusMsg("Almost ready!");
+
+    // Save user + wallet to DB so wallet-based bookings and escrow work.
+    // Fire-and-forget — doesn't block the login flow.
+    if (walletAddress && verifierId && resolvedEmail) {
+      fetch(`${BASE_URL}/api/wallet/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ web3auth_token: idToken, email: resolvedEmail, name: resolvedName }),
+      }).catch(() => {});
+    }
+
     await delay(400);
 
     const userId = `w3a_${verifierId?.replace(/[^a-z0-9]/gi, "_") ?? Date.now()}`;
