@@ -107,9 +107,10 @@ export default function Scan() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           qr_data: qrData,
-          user_id: user?.id ?? "guest",
+          user_id: user?.email ?? user?.id ?? "guest",
           user_name: user?.name ?? "JaIre Member",
           user_email: user?.email,
+          user_wallet_address: user?.walletAddress ?? undefined,
         }),
       });
 

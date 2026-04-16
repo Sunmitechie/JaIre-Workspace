@@ -18,6 +18,8 @@ export function serializeBooking(b: Booking, workspaceName?: string) {
     refunded_amount_usdc: b.refundedAmountUsdc,
     escrow_account: b.escrowAccount,
     transaction_signature: b.transactionSignature,
+    escrow_tx_signature: b.escrowTxSignature,
+    settlement_tx_signature: b.settlementTxSignature,
     payment_method: b.paymentMethod,
     ngn_amount_paid: b.ngnAmountPaid,
   };

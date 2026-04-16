@@ -67,7 +67,7 @@ router.post("/checkin", async (req, res) => {
 
     const uid = user_id || user_email || "guest";
 
-    // Check if already checked in
+    // Check if already actively checked in
     const existing = await db
       .select()
       .from(bookings)
@@ -82,24 +82,49 @@ router.post("/checkin", async (req, res) => {
       });
     }
 
-    // If there's a confirmed booking for this workspace, just record check-in time
-    // (booking was confirmed + escrow done at payment time)
-    const [booking] = await db
-      .insert(bookings)
-      .values({
-        id: randomUUID(),
-        workspaceId: ws.id,
-        userId: uid,
-        userName: user_name || "JaIre Member",
-        userEmail: user_email || null,
-        status: "active",
-        checkInTime: new Date(),
-        plannedDurationHours: 8,
-        escrowAmountUsdc: ws.hourlyRateUsdc * 8,
-        paymentMethod: "paystack",
-        ngnAmountPaid: 0,
-      })
-      .returning();
+    // Look for a confirmed (paid + escrowed) booking for this workspace.
+    // Promote it to "active" and record check-in time — no new booking needed.
+    const confirmedBookings = await db
+      .select()
+      .from(bookings)
+      .where(and(eq(bookings.userId, uid), eq(bookings.status, "confirmed")));
+
+    const confirmedForWs = confirmedBookings.find((b) => b.workspaceId === ws.id)
+      ?? confirmedBookings[0]; // accept any confirmed booking as a fallback
+
+    let booking: typeof confirmedBookings[0];
+    const checkInTime = new Date();
+
+    if (confirmedForWs) {
+      // Transition the existing confirmed booking to active — timer starts now
+      const [updated] = await db
+        .update(bookings)
+        .set({ status: "active", checkInTime })
+        .where(eq(bookings.id, confirmedForWs.id))
+        .returning();
+      booking = updated;
+      console.log(`[QR check-in] Promoted confirmed booking ${booking.id} → active`);
+    } else {
+      // Walk-in: no pre-paid booking — create one and start it immediately
+      const [created] = await db
+        .insert(bookings)
+        .values({
+          id: randomUUID(),
+          workspaceId: ws.id,
+          userId: uid,
+          userName: user_name || "JaIre Member",
+          userEmail: user_email || null,
+          status: "active",
+          checkInTime,
+          plannedDurationHours: 8,
+          escrowAmountUsdc: ws.hourlyRateUsdc * 8,
+          paymentMethod: "paystack",
+          ngnAmountPaid: 0,
+        })
+        .returning();
+      booking = created;
+      console.log(`[QR check-in] Walk-in booking ${booking.id} created`);
+    }
 
     await db.insert(activityEvents).values({
       id: randomUUID(),
@@ -127,8 +152,9 @@ router.post("/checkin", async (req, res) => {
       booking_id: booking.id,
       workspace_id: ws.id,
       workspace_name: ws.name,
-      check_in_time: booking.checkInTime!.toISOString(),
+      check_in_time: checkInTime.toISOString(),
       hourly_rate_ngn: ws.hourlyRateNgn,
+      escrow_tx_signature: booking.escrowTxSignature ?? null,
       message: "Welcome! Your session has started. USDC is in escrow.",
     });
   } catch (err) {

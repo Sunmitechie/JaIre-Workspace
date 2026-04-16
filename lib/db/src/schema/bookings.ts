@@ -4,6 +4,7 @@ import { workspaces } from "./workspaces";
 
 export const bookingStatusEnum = pgEnum("booking_status", [
   "pending",
+  "confirmed",
   "active",
   "completed",
   "cancelled",
