@@ -34,11 +34,6 @@ export default defineConfig({
     __WEB3AUTH_CLIENT_ID__: JSON.stringify(process.env["WEB3AUTH_CLIENT_ID"] ?? ""),
     __GOOGLE_CLIENT_ID__: JSON.stringify(process.env["GOOGLE_CLIENT_ID"] ?? ""),
     __WEB3AUTH_GOOGLE_VERIFIER__: JSON.stringify(process.env["WEB3AUTH_GOOGLE_VERIFIER"] ?? ""),
-    // Inline process.nextTick so esbuild never has a chance to rename it to
-    // process2.nextTick (which is undefined in the browser-polyfilled process object).
-    // This define runs before esbuild renames the `process` global, so every
-    // occurrence of `process.nextTick(...)` in any dep becomes an inline promise.
-    "process.nextTick": "((fn, ...args) => Promise.resolve().then(() => fn(...args)))",
     // util@0.12.5 reads process.NODE_DEBUG at module load time; stub it out.
     "process.NODE_DEBUG": "false",
     // WalletConnect (bundled inside @web3auth/no-modal) reads these env vars at chunk

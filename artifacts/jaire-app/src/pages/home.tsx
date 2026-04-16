@@ -1,14 +1,16 @@
 import { Link } from "wouter";
 import { useListWorkspaces } from "@workspace/api-client-react";
 import { formatNGN } from "@/lib/currency";
-import { ArrowRight, MapPin, Zap, Shield, Mic, Clock } from "lucide-react";
+import { ArrowRight, MapPin, Zap, Shield, Mic, Clock, Building2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Particles } from "@/components/particles";
 import { isLoggedIn } from "@/lib/auth";
+import { isOrgLoggedIn } from "@/lib/org-auth";
 
 export default function Home() {
   const { data: workspaces, isLoading } = useListWorkspaces();
   const loggedIn = isLoggedIn();
+  const orgLoggedIn = isOrgLoggedIn();
 
   return (
     <div className="flex flex-col min-h-screen relative">
@@ -20,7 +22,7 @@ export default function Home() {
           style={{ background: "rgba(255,170,0,0.08)", border: "1px solid rgba(255,170,0,0.2)" }}
         >
           <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-          <span className="text-sm font-medium text-primary">Lagos · Victoria Island · Lekki</span>
+          <span className="text-sm font-medium text-primary">Web2.5 · Solana · AI-Powered</span>
         </div>
 
         <h1 className="text-6xl md:text-8xl font-bold tracking-tight max-w-5xl mb-8 leading-[0.92]">
@@ -29,7 +31,7 @@ export default function Home() {
         </h1>
 
         <p className="text-xl md:text-2xl text-muted-foreground max-w-2xl mb-12 leading-relaxed font-light">
-          Premium coworking in Lagos. Book by the minute, pay in Naira.
+          Premium coworking, booked by the minute, settled on-chain.
           <br className="hidden md:block" />
           Meet Baire — your AI concierge that does it all.
         </p>
@@ -224,6 +226,51 @@ export default function Home() {
                 <p className="text-muted-foreground leading-relaxed">{desc}</p>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Org / Workspace Provider CTA */}
+      <section className="relative z-10 py-24 border-t border-white/6">
+        <div className="container px-4 md:px-6">
+          <div
+            className="rounded-3xl p-10 md:p-14 flex flex-col md:flex-row items-center justify-between gap-8"
+            style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.08) 0%, rgba(56,189,248,0.05) 100%)", border: "1px solid rgba(139,92,246,0.2)" }}
+          >
+            <div className="flex-1 text-center md:text-left">
+              <div
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium mb-5"
+                style={{ background: "rgba(139,92,246,0.12)", color: "hsl(262 83% 72%)", border: "1px solid rgba(139,92,246,0.25)" }}
+              >
+                <Building2 className="w-3.5 h-3.5" />
+                For Workspace Providers
+              </div>
+              <h2 className="text-3xl md:text-4xl font-bold mb-4">
+                List your space.<br />
+                <span className="text-gradient-sky-purple">Earn on-chain.</span>
+              </h2>
+              <p className="text-muted-foreground text-lg max-w-md leading-relaxed">
+                Join JaIre as an org partner. List your desks, suites, and meeting rooms — get paid in USDC directly to your Solana wallet, every session.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 shrink-0">
+              <Link href={orgLoggedIn ? "/org/dashboard" : "/org/signup"}>
+                <button
+                  className="h-13 px-8 rounded-xl text-sm font-semibold flex items-center gap-2.5 transition-all hover:scale-[1.02] whitespace-nowrap"
+                  style={{
+                    background: "linear-gradient(135deg, rgba(139,92,246,0.9) 0%, rgba(99,102,241,0.9) 100%)",
+                    color: "#fff",
+                    boxShadow: "0 8px 28px rgba(139,92,246,0.3)",
+                    padding: "0.75rem 2rem",
+                  }}
+                >
+                  <Building2 className="w-4 h-4" />
+                  {orgLoggedIn ? "Go to Dashboard" : "Register Your Org"}
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </Link>
+              <p className="text-gray-600 text-xs text-center">Free signup · KYC required · 85% revenue share</p>
+            </div>
           </div>
         </div>
       </section>
