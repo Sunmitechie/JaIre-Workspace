@@ -1,7 +1,7 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 
-const API_BASE = "http://localhost:8080/api";
+const API_BASE = `http://localhost:${process.env["PORT"] ?? "8080"}/api`;
 const MPC_SIDECAR = "http://localhost:9000";
 
 const WORKSPACES = [
@@ -208,11 +208,24 @@ export const bookAndPayTool = new DynamicStructuredTool({
     user_email: z.string().describe("User's email address — required"),
   }),
   func: async ({ workspace_id, planned_duration_hours, user_name, user_email }) => {
+    const ws = WORKSPACES.find((w) => w.id === workspace_id);
     try {
       const res = await fetch(`${API_BASE}/payments/book-with-balance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace_id, planned_duration_hours, user_email, user_name }),
+        body: JSON.stringify({
+          workspace_id,
+          planned_duration_hours,
+          user_email,
+          user_name,
+          workspace_fallback: ws
+            ? {
+                name: ws.name,
+                hourly_rate_ngn: ws.hourly_rate_ngn,
+                hourly_rate_usdc: +(ws.hourly_rate_ngn / JAIRE_RATE).toFixed(6),
+              }
+            : undefined,
+        }),
       });
 
       if (!res.ok) {

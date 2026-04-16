@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Volume2, VolumeX, Keyboard, X } from "lucide-react";
+import { Send, Volume2, VolumeX, Keyboard, X, ExternalLink, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getUser } from "@/lib/auth";
 import { WalletPanel } from "@/components/wallet-panel";
@@ -37,12 +37,19 @@ function timeGreeting() {
   return "Good evening";
 }
 
-async function playAudioBlob(blob: Blob): Promise<void> {
+function extractPaymentUrl(text: string): string | null {
+  const match = text.match(/https?:\/\/(?:checkout\.)?paystack\.[^\s)>"]+/i)
+    ?? text.match(/https?:\/\/[^\s)>"]*paystack[^\s)>"]+/i);
+  return match?.[0] ?? null;
+}
+
+async function playAudioBlob(blob: Blob, audioRef: React.MutableRefObject<HTMLAudioElement | null>): Promise<void> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-    audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+    audioRef.current = audio;
+    audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; resolve(); };
+    audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; resolve(); };
     audio.play().catch(() => resolve());
   });
 }
@@ -63,16 +70,26 @@ export default function Baire() {
 
   const isWelcome = messages.length === 0;
 
+  const [convInitError, setConvInitError] = useState(false);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const isMutedRef = useRef(isMuted);
   useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
 
-  useEffect(() => {
-    createConversation().then(setConvId).catch(console.error);
+  const initConversation = useCallback(() => {
+    setConvInitError(false);
+    createConversation()
+      .then(setConvId)
+      .catch(() => setConvInitError(true));
   }, []);
+
+  useEffect(() => {
+    initConversation();
+  }, [initConversation]);
 
   useEffect(() => {
     if (!user?.walletAddress) return;
@@ -92,8 +109,17 @@ export default function Baire() {
     if (showInput && inputRef.current) inputRef.current.focus();
   }, [showInput]);
 
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+  }, []);
+
   const speakWithElevenLabs = useCallback(async (text: string) => {
     if (isMutedRef.current) { setBaireState("idle"); return; }
+    stopAudio();
     setBaireState("speaking");
     try {
       const res = await fetch(`${BASE_URL}/api/baire/tts`, {
@@ -104,17 +130,21 @@ export default function Baire() {
       if (!res.ok) throw new Error("TTS failed");
       const arrayBuffer = await res.arrayBuffer();
       const blob = new Blob([arrayBuffer], { type: "audio/mpeg" });
-      await playAudioBlob(blob);
+      await playAudioBlob(blob, audioRef);
     } catch {
       // silently fall through
     } finally {
       setBaireState("idle");
     }
-  }, []);
+  }, [stopAudio]);
 
   const sendTextMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || !convId || baireState === "processing") return;
+      if (!text.trim() || baireState === "processing") return;
+      if (!convId) {
+        if (convInitError) initConversation();
+        return;
+      }
       setShowInput(false);
       setInputText("");
 
@@ -177,7 +207,7 @@ export default function Baire() {
         setBaireState("idle");
       }
     },
-    [convId, baireState, user, speakWithElevenLabs, walletBalanceUsdc]
+    [convId, convInitError, initConversation, baireState, user, speakWithElevenLabs, walletBalanceUsdc]
   );
 
   const sendVoiceMessage = useCallback(
@@ -295,7 +325,7 @@ export default function Baire() {
 
   const handleOrbPress = () => {
     if (baireState === "listening") stopVoice();
-    else if (baireState === "speaking") setBaireState("idle");
+    else if (baireState === "speaking") { stopAudio(); setBaireState("idle"); }
     else if (baireState === "idle") startVoice();
   };
 
@@ -353,6 +383,17 @@ export default function Baire() {
       {/* ─── WELCOME STATE ─── */}
       {isWelcome && (
         <div className="flex-1 flex flex-col items-center justify-center px-6 text-center relative z-10">
+          {convInitError && (
+            <div className="mb-6 flex items-center gap-3 px-4 py-3 rounded-2xl text-[13px]"
+              style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", color: "rgba(252,165,165,0.9)" }}>
+              <span>Couldn't connect to Baire. Check your network.</span>
+              <button onClick={initConversation}
+                className="flex items-center gap-1.5 font-semibold hover:opacity-80 transition-opacity shrink-0">
+                <RefreshCw className="w-3 h-3" />
+                Retry
+              </button>
+            </div>
+          )}
           <div className="mb-10">
             <p className="text-[13px] font-medium mb-3 tracking-widest uppercase"
               style={{ color: "rgba(255,170,0,0.6)" }}>
@@ -470,35 +511,46 @@ export default function Baire() {
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4 relative z-10"
             style={{ scrollBehavior: "smooth" }}>
             <div className="max-w-2xl mx-auto space-y-4">
-              {messages.map((msg, i) => (
-                <div key={i} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
-                  {msg.role === "baire" && (
-                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-1"
-                      style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.3), rgba(56,189,248,0.3))",
-                        border: "1px solid rgba(139,92,246,0.3)", color: "hsl(262 83% 76%)" }}>
-                      B
-                    </div>
-                  )}
-                  <div className={cn("px-4 py-3 rounded-2xl text-[15px] leading-relaxed max-w-[82%]",
-                    msg.role === "user" ? "rounded-tr-sm" : "rounded-tl-sm")}
-                    style={msg.role === "user"
-                      ? { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.09)" }
-                      : { background: "rgba(139,92,246,0.09)", border: "1px solid rgba(139,92,246,0.2)" }}>
-                    {msg.content || (msg.isStreaming ? null : "…")}
-                    {msg.isStreaming && !msg.content && (
-                      <div className="flex gap-1.5 py-1">
-                        {[0, 1, 2].map((j) => (
-                          <div key={j} className="w-2 h-2 rounded-full bg-current opacity-40 animate-bounce"
-                            style={{ animationDelay: `${j * 150}ms` }} />
-                        ))}
+              {messages.map((msg, i) => {
+                const paymentUrl = msg.role === "baire" && !msg.isStreaming ? extractPaymentUrl(msg.content) : null;
+                return (
+                  <div key={i} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
+                    {msg.role === "baire" && (
+                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-1"
+                        style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.3), rgba(56,189,248,0.3))",
+                          border: "1px solid rgba(139,92,246,0.3)", color: "hsl(262 83% 76%)" }}>
+                        B
                       </div>
                     )}
-                    {msg.isStreaming && msg.content && (
-                      <span className="inline-block w-0.5 h-4 bg-current opacity-60 ml-0.5 animate-pulse align-bottom" />
-                    )}
+                    <div className={cn("px-4 py-3 rounded-2xl text-[15px] leading-relaxed max-w-[82%]",
+                      msg.role === "user" ? "rounded-tr-sm" : "rounded-tl-sm")}
+                      style={msg.role === "user"
+                        ? { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.09)" }
+                        : { background: "rgba(139,92,246,0.09)", border: "1px solid rgba(139,92,246,0.2)" }}>
+                      {msg.content || (msg.isStreaming ? null : "…")}
+                      {msg.isStreaming && !msg.content && (
+                        <div className="flex gap-1.5 py-1">
+                          {[0, 1, 2].map((j) => (
+                            <div key={j} className="w-2 h-2 rounded-full bg-current opacity-40 animate-bounce"
+                              style={{ animationDelay: `${j * 150}ms` }} />
+                          ))}
+                        </div>
+                      )}
+                      {msg.isStreaming && msg.content && (
+                        <span className="inline-block w-0.5 h-4 bg-current opacity-60 ml-0.5 animate-pulse align-bottom" />
+                      )}
+                      {paymentUrl && (
+                        <a href={paymentUrl} target="_blank" rel="noopener noreferrer"
+                          className="mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold transition-all hover:scale-[1.02] active:scale-95 w-fit"
+                          style={{ background: "linear-gradient(135deg, hsl(43 100% 50%), hsl(38 100% 44%))", color: "hsl(220 40% 5%)" }}>
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Pay Now
+                        </a>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

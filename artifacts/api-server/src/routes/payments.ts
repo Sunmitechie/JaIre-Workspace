@@ -6,7 +6,7 @@ import { eq, and } from "drizzle-orm";
 
 const router = Router();
 
-const PAYSTACK_SECRET = process.env["PAYSTACK_SECRET_KEY"]!;
+const PAYSTACK_SECRET = (process.env["PAYSTACK_SECRET_KEY"] ?? process.env["PAYSTACK_TEST_API_KEY"])!;
 const PAYSTACK_BASE = "https://api.paystack.co";
 const MPC_SIDECAR = "http://localhost:9000";
 
@@ -312,19 +312,29 @@ router.post("/payments/recover-pending", async (req, res) => {
 // Returns { method:"wallet"|"paystack", booking_id, ... }
 router.post("/payments/book-with-balance", async (req, res) => {
   try {
-    const { workspace_id, planned_duration_hours, user_email, user_name } = req.body as {
+    const { workspace_id, planned_duration_hours, user_email, user_name, workspace_fallback } = req.body as {
       workspace_id: string;
       planned_duration_hours: number;
       user_email: string;
       user_name?: string;
+      workspace_fallback?: { name: string; hourly_rate_ngn: number; hourly_rate_usdc: number };
     };
 
     if (!workspace_id || !planned_duration_hours || !user_email) {
       return res.status(400).json({ error: "workspace_id, planned_duration_hours and user_email are required" });
     }
 
-    // Look up workspace
-    const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, workspace_id));
+    // Look up workspace from DB — fall back to Baire's hardcoded data if not yet seeded
+    const [dbWs] = await db.select().from(workspaces).where(eq(workspaces.id, workspace_id));
+    const ws = dbWs ?? (workspace_fallback
+      ? {
+          id: workspace_id,
+          name: workspace_fallback.name,
+          hourlyRateNgn: workspace_fallback.hourly_rate_ngn,
+          hourlyRateUsdc: workspace_fallback.hourly_rate_usdc,
+        }
+      : null);
+
     if (!ws) return res.status(404).json({ error: "Workspace not found" });
 
     const escrowUsdc = ws.hourlyRateUsdc * planned_duration_hours;
