@@ -312,11 +312,12 @@ router.post("/payments/recover-pending", async (req, res) => {
 // Returns { method:"wallet"|"paystack", booking_id, ... }
 router.post("/payments/book-with-balance", async (req, res) => {
   try {
-    const { workspace_id, planned_duration_hours, user_email, user_name, workspace_fallback } = req.body as {
+    const { workspace_id, planned_duration_hours, user_email, user_name, workspace_fallback, user_wallet_address: requestWalletAddress } = req.body as {
       workspace_id: string;
       planned_duration_hours: number;
       user_email: string;
       user_name?: string;
+      user_wallet_address?: string;
       workspace_fallback?: { name: string; hourly_rate_ngn: number; hourly_rate_usdc: number };
     };
 
@@ -342,7 +343,8 @@ router.post("/payments/book-with-balance", async (req, res) => {
 
     // Look up user wallet + verifier_id
     const [user] = await db.select().from(users).where(eq(users.email, user_email));
-    const userWalletAddress = user?.walletAddress;
+    // Use DB wallet address, falling back to the address provided in the request
+    const userWalletAddress = user?.walletAddress ?? requestWalletAddress;
     const verifierId = user?.verifierId;
 
     // Check wallet balance
