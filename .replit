@@ -30,6 +30,14 @@ args = "JaIre Python API"
 task = "workflow.run"
 args = "JaIre MPC Sidecar"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "JaIre API Server"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "JaIre App"
+
 [[workflows.workflow]]
 name = "JaIre Python API"
 author = "agent"
@@ -53,6 +61,30 @@ waitForPort = 9000
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow]]
+name = "JaIre API Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=8080 pnpm --filter @workspace/api-server run dev"
+waitForPort = 8080
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "JaIre App"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=5173 BASE_PATH=/ pnpm --filter @workspace/jaire-app run dev"
+waitForPort = 5173
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [agent]
 stack = "PNPM_WORKSPACE"

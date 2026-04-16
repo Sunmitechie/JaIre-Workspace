@@ -8,14 +8,20 @@ Web2.5 coworking workspace booking platform for "Blockchain Nomads." Users pay i
 
 ---
 
-## Services
+## Services & Workflows
 
-| Service | Port | Language | Purpose |
-|---------|------|----------|---------|
-| Express API Proxy | 8080 | TypeScript | Routes all traffic; forwards `/jaire/*` → Python, `/mpc/*` → MPC Sidecar; `/api/config` endpoint |
-| JaIre Python API | 8000 | Python 3.11 | Core: wallets, payments, Solana, DB |
-| MPC Sidecar | 9000 | TypeScript | Web3Auth JWT verify + key-factor share derivation |
-| Anchor Program | — | Rust | Escrow smart contract (85/15 split) |
+| Service | Port | Workflow Name | Language | Purpose |
+|---------|------|---------------|----------|---------|
+| JaIre App (Vite) | 5173 | JaIre App | TypeScript/React | Frontend — Baire UI, booking flows, wallet management |
+| Express API + Baire | 8080 | JaIre API Server | TypeScript | Baire AI agent, payments, proxy to Python/MPC |
+| JaIre Python API | 8000 | JaIre Python API | Python 3.11 | Core: wallets, payments, Solana, DB |
+| MPC Sidecar | 9000 | JaIre MPC Sidecar | TypeScript | Web3Auth JWT verify + key-factor share derivation |
+| Anchor Program | — | — | Rust | Escrow smart contract (85/15 split) |
+
+### Proxy routing (via Vite dev proxy → api-server)
+- `/api/*` → api-server (port 8080)
+- `/jaire/*` → Python API (port 8000, via api-server)
+- `/mpc/*` → MPC Sidecar (port 9000, via api-server)
 
 ---
 

@@ -47,7 +47,7 @@ function getBaireModel(): ChatOpenAI {
     model: "llama-3.3-70b-versatile",
     configuration: {
       baseURL: "https://api.groq.com/openai/v1",
-      apiKey: process.env["GROQ_AI_API_KEY"],
+      apiKey: process.env["GROQ_API_KEY"],
     },
     maxTokens: 512,
     streaming: false,
@@ -119,7 +119,7 @@ export async function* runBaireAgentStream(
     model: "llama-3.3-70b-versatile",
     configuration: {
       baseURL: "https://api.groq.com/openai/v1",
-      apiKey: process.env["GROQ_AI_API_KEY"],
+      apiKey: process.env["GROQ_API_KEY"],
     },
     maxTokens: 512,
     streaming: true,
