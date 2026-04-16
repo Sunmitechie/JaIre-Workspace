@@ -2,7 +2,7 @@
 
 ## Overview
 
-Web2.5 coworking workspace booking platform for "Blockchain Nomads." Users pay in Naira (NGN) via Paystack/Roqqu; the backend invisibly converts to USDC and settles on Solana via Web3Auth MPC wallets.
+Web2.5 coworking workspace booking platform for "Blockchain Nomads." Users pay in Naira (NGN) via Paystack/Roqqu; the backend invisibly converts to USDC and settles on Solana via Web3Auth MPC wallets. Every Solana transaction includes a `JAIRE|TYPE|REF` on-chain memo. Workspace providers onboard via the Org Dashboard with Web3Auth signup + KYC.
 
 **Architecture**: pnpm monorepo with Python FastAPI backend + Node.js Express proxy + Node.js MPC sidecar + Anchor smart contract (Rust).
 

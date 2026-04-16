@@ -20,6 +20,7 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
   sendAndConfirmTransaction,
+  TransactionInstruction,
 } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
@@ -29,6 +30,18 @@ import {
   getMint,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
+
+// ── SPL Memo program ───────────────────────────────────────────────────────
+// Attaches a UTF-8 string to any Solana transaction. Visible on Solana Explorer.
+const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
+function buildMemoInstruction(memo: string): TransactionInstruction {
+  return new TransactionInstruction({
+    keys: [],
+    programId: MEMO_PROGRAM_ID,
+    data: Buffer.from(memo.slice(0, 566), "utf-8"), // memo max ~566 bytes on-chain
+  });
+}
 import bs58 from "bs58";
 import { config } from "../config.js";
 import { deriveUserDevnetKeypair } from "./mpc-service.js";
@@ -168,6 +181,7 @@ export async function fundUserWallet(
   amountUsdc: number,
   mintAddress: string = DEFAULT_TEST_MINT,
   isSimulated: boolean = false,
+  memo?: string,
 ): Promise<FundResult> {
   if (isSimulated) {
     return {
@@ -221,14 +235,10 @@ export async function fundUserWallet(
 
     // Mint directly to the recipient's ATA — treasury is the mint authority
     // This avoids needing USDC pre-loaded in the treasury's own balance.
-    const tx = new Transaction().add(
-      createMintToInstruction(
-        mint,
-        toATA.address,
-        treasury.publicKey,
-        atomicAmount,
-      ),
-    );
+    const effectiveMemo = memo ?? `JAIRE|FUND|${amountUsdc}USDC|${walletAddress.slice(0, 8)}`;
+    const tx = new Transaction()
+      .add(createMintToInstruction(mint, toATA.address, treasury.publicKey, atomicAmount))
+      .add(buildMemoInstruction(effectiveMemo));
 
     const sig = await sendAndConfirmTransaction(connection, tx, [treasury], {
       commitment: "confirmed",
@@ -381,6 +391,7 @@ export async function vaultToUserTransfer(
   userAddress: string,
   amountUsdc: number,
   mintAddress: string = DEFAULT_TEST_MINT,
+  memo?: string,
 ): Promise<FundResult> {
   try {
     const connection = getSolanaConnection();
@@ -402,12 +413,10 @@ export async function vaultToUserTransfer(
       connection, treasury, mint, recipient,
     );
 
-    const tx = new Transaction().add(
-      createTransferInstruction(
-        fromATA.address, toATA.address,
-        vault.publicKey, atomicAmount, [], TOKEN_PROGRAM_ID,
-      ),
-    );
+    const effectiveMemo = memo ?? `JAIRE|SETTLE|${amountUsdc}USDC|${userAddress.slice(0, 8)}`;
+    const tx = new Transaction()
+      .add(createTransferInstruction(fromATA.address, toATA.address, vault.publicKey, atomicAmount, [], TOKEN_PROGRAM_ID))
+      .add(buildMemoInstruction(effectiveMemo));
 
     const sig = await sendAndConfirmTransaction(connection, tx, [vault, treasury], { commitment: "confirmed" });
 
@@ -442,6 +451,7 @@ export async function signUserUSDCTransfer(
   amountUsdc: number,
   mintAddress: string = DEFAULT_TEST_MINT,
   isSimulated: boolean = false,
+  memo?: string,
 ): Promise<TransferResult> {
   const userKeypair = deriveUserDevnetKeypair(verifierId);
   const fromAddress = userKeypair.publicKey.toBase58();
@@ -481,16 +491,10 @@ export async function signUserUSDCTransfer(
       toPubkey,
     );
 
-    const tx = new Transaction().add(
-      createTransferInstruction(
-        fromATA.address,
-        toATA.address,
-        fromPubkey,
-        atomicAmount,
-        [],
-        TOKEN_PROGRAM_ID,
-      ),
-    );
+    const effectiveMemo = memo ?? `JAIRE|ESCROW|${amountUsdc}USDC|${fromAddress.slice(0, 8)}→${toAddress.slice(0, 8)}`;
+    const tx = new Transaction()
+      .add(createTransferInstruction(fromATA.address, toATA.address, fromPubkey, atomicAmount, [], TOKEN_PROGRAM_ID))
+      .add(buildMemoInstruction(effectiveMemo));
 
     const sig = await sendAndConfirmTransaction(
       connection,

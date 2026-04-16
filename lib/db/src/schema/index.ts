@@ -5,3 +5,4 @@ export * from "./bookings";
 export * from "./activity_events";
 export * from "./users";
 export * from "./payments";
+export * from "./organizations";

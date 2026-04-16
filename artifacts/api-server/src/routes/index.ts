@@ -7,6 +7,7 @@ import analyticsRouter from "./analytics";
 import walletRouter from "./wallet";
 import qrRouter from "./qr";
 import paymentsRouter from "./payments";
+import orgRouter from "./org";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use("/analytics", analyticsRouter);
 router.use("/wallet", walletRouter);
 router.use("/qr", qrRouter);
 router.use(paymentsRouter);
+router.use("/org", orgRouter);
 
 export default router;

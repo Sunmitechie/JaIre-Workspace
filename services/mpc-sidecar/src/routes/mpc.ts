@@ -301,10 +301,11 @@ router.post("/sign-usdc-transfer", async (req: Request, res: Response) => {
  */
 router.post("/internal/escrow", async (req: Request, res: Response) => {
   try {
-    const { verifier_id, amount_usdc, mint } = req.body as {
+    const { verifier_id, amount_usdc, mint, memo } = req.body as {
       verifier_id?: string;
       amount_usdc?: number;
       mint?: string;
+      memo?: string;
     };
 
     if (!verifier_id) { res.status(400).json({ error: "verifier_id required" }); return; }
@@ -313,7 +314,7 @@ router.post("/internal/escrow", async (req: Request, res: Response) => {
     const vaultAddress = process.env["JAIRE_VAULT_ADDRESS"];
     if (!vaultAddress) { res.status(500).json({ error: "JAIRE_VAULT_ADDRESS not set" }); return; }
 
-    const result = await signUserUSDCTransfer(verifier_id, vaultAddress, amount_usdc, mint, false);
+    const result = await signUserUSDCTransfer(verifier_id, vaultAddress, amount_usdc, mint, false, memo);
 
     console.log(
       `[mpc/internal/escrow] ${result.is_simulated ? "SIM" : "LIVE"} ` +
@@ -338,10 +339,11 @@ router.post("/internal/escrow", async (req: Request, res: Response) => {
  */
 router.post("/vault-settle", async (req: Request, res: Response) => {
   try {
-    const { to_address, amount_usdc, mint } = req.body as {
+    const { to_address, amount_usdc, mint, memo } = req.body as {
       to_address?: string;
       amount_usdc?: number;
       mint?: string;
+      memo?: string;
     };
 
     if (!to_address) { res.status(400).json({ error: "to_address required" }); return; }
@@ -352,7 +354,7 @@ router.post("/vault-settle", async (req: Request, res: Response) => {
       return;
     }
 
-    const result = await vaultToUserTransfer(to_address, amount_usdc, mint);
+    const result = await vaultToUserTransfer(to_address, amount_usdc, mint, memo);
 
     console.log(
       `[mpc/vault-settle] ${result.is_simulated ? "SIM" : "LIVE"} ` +
@@ -377,17 +379,19 @@ router.post("/vault-settle", async (req: Request, res: Response) => {
  */
 router.post("/fund-by-address", async (req: Request, res: Response) => {
   try {
-    const { wallet_address, usdc_amount, reference, mint } = req.body as {
+    const { wallet_address, usdc_amount, reference, mint, memo } = req.body as {
       wallet_address?: string;
       usdc_amount?: number;
       reference?: string;
       mint?: string;
+      memo?: string;
     };
 
     if (!wallet_address) { res.status(400).json({ error: "wallet_address required" }); return; }
     if (!usdc_amount || usdc_amount <= 0) { res.status(400).json({ error: "usdc_amount must be > 0" }); return; }
 
-    const result = await fundUserWallet(wallet_address, usdc_amount, mint);
+    const effectiveMemo = memo ?? (reference ? `JAIRE|FUND|${reference}|${usdc_amount}USDC` : undefined);
+    const result = await fundUserWallet(wallet_address, usdc_amount, mint, false, effectiveMemo);
 
     if (result.tx_signature) {
       console.log(
