@@ -136,13 +136,13 @@ router.get("/dashboard", requireOrgAuth, async (req: Request, res: Response) => 
       id: bookings.id,
       workspaceId: bookings.workspaceId,
       status: bookings.status,
-      startTime: bookings.startTime,
-      endTime: bookings.endTime,
-      billedUsdc: bookings.billedUsdc,
+      startTime: bookings.checkInTime,
+      endTime: bookings.checkOutTime,
+      billedUsdc: bookings.billedAmountUsdc,
       escrowTxSignature: bookings.escrowTxSignature,
     }).from(bookings)
       .where(sql`workspace_id = ANY(ARRAY[${sql.join(wsIds.map(id => sql`${id}`), sql`, `)}])`)
-      .orderBy(desc(bookings.startTime))
+      .orderBy(desc(bookings.checkInTime))
       .limit(20);
 
     // Metrics
