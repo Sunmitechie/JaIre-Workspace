@@ -1,0 +1,82 @@
+[
+  {
+    "id": "a1f3c2d4-b5e6-4789-abcd-ef1234567801",
+    "position": 1,
+    "filepath": "src/pages/slides/Slide01Cover.tsx",
+    "title": "Cover — Workspace. On-Chain.",
+    "description": "Title slide with hero image, JaIre logo, tagline and round details",
+    "speakerNotes": ""
+  },
+  {
+    "id": "b2f4c3d5-c6f7-4890-bcde-fa2345678902",
+    "position": 2,
+    "filepath": "src/pages/slides/Slide02Problem.tsx",
+    "title": "Problem — Coworking & Crypto are Broken",
+    "description": "Two-column problem slide: coworking waste and crypto friction wall",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c3f5d4e6-d7a8-4901-cdef-ab3456789003",
+    "position": 3,
+    "filepath": "src/pages/slides/Slide03Market.tsx",
+    "title": "Market Opportunity — $47.5B TAM",
+    "description": "TAM/SAM/SOM market sizing with big stat hero number",
+    "speakerNotes": ""
+  },
+  {
+    "id": "d4a6e5f7-e8b9-4012-defa-bc4567890104",
+    "position": 4,
+    "filepath": "src/pages/slides/Slide04Solution.tsx",
+    "title": "Solution — Book. Pay. Settle on Solana.",
+    "description": "Split layout: bold statement left, product features right",
+    "speakerNotes": ""
+  },
+  {
+    "id": "e5b7f6a8-f9c0-4123-efab-cd5678901205",
+    "position": 5,
+    "filepath": "src/pages/slides/Slide05HowItWorks.tsx",
+    "title": "How It Works — 3 Steps",
+    "description": "Three-column flow: Baire books, Paystack pays, Solana settles",
+    "speakerNotes": ""
+  },
+  {
+    "id": "f6c8a7b9-a0d1-4234-fabc-de6789012306",
+    "position": 6,
+    "filepath": "src/pages/slides/Slide06WhyNow.tsx",
+    "title": "Why Now — Three Converging Forces",
+    "description": "Solana speed, Web3Auth MPC, and Africa's crypto moment",
+    "speakerNotes": ""
+  },
+  {
+    "id": "a7d9b8c0-b1e2-4345-abcd-ef7890123407",
+    "position": 7,
+    "filepath": "src/pages/slides/Slide07BusinessModel.tsx",
+    "title": "Business Model — 15% + 0.5% + Token",
+    "description": "Three revenue streams: session fee, FX spread, future JAIRE token",
+    "speakerNotes": ""
+  },
+  {
+    "id": "b8e0c9d1-c2f3-4456-bcde-fa8901234508",
+    "position": 8,
+    "filepath": "src/pages/slides/Slide08Traction.tsx",
+    "title": "Traction — Built. Ready to Scale.",
+    "description": "Current achievements and 6-month roadmap milestones",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c9f1d0e2-d3a4-4567-cdef-ab9012345609",
+    "position": 9,
+    "filepath": "src/pages/slides/Slide09TechStack.tsx",
+    "title": "Technical Architecture — The Full Stack",
+    "description": "Six-layer architecture: blockchain, identity, payments, AI, backend, frontend",
+    "speakerNotes": ""
+  },
+  {
+    "id": "d0a2e1f3-e4b5-4678-defa-bc0123456710",
+    "position": 10,
+    "filepath": "src/pages/slides/Slide10TheAsk.tsx",
+    "title": "The Ask — $500K Pre-Seed",
+    "description": "Funding amount, use of funds breakdown, and live demo link",
+    "speakerNotes": ""
+  }
+]

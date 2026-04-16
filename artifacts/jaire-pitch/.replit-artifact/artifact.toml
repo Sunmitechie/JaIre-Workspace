@@ -1,0 +1,31 @@
+kind = "slides"
+previewPath = "/jaire-pitch/"
+title = "JaIre — Investor Pitch Deck"
+version = "1.0.0"
+id = "artifacts/jaire-pitch"
+router = "path"
+
+[[integratedSkills]]
+name = "slides"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/jaire-pitch/" ]
+localPort = 5174
+
+[services.development]
+run = "PORT=5174 BASE_PATH=/jaire-pitch/ pnpm --filter @workspace/jaire-pitch run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/jaire-pitch", "run", "build" ]
+publicDir = "artifacts/jaire-pitch/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "5174"
+BASE_PATH = "/jaire-pitch/"
