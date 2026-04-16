@@ -249,13 +249,20 @@ export const bookAndPayTool = new DynamicStructuredTool({
       };
 
       if (data.method === "wallet") {
+        const explorerUrl = data.escrow_tx
+          ? `https://explorer.solana.com/tx/${data.escrow_tx}?cluster=devnet`
+          : null;
         return JSON.stringify({
           success: true,
           method: "wallet",
           booking_id: data.booking_id,
           workspace_name: data.workspace_name,
-          booking_status: "active",
-          message: `Booking confirmed! Your session at ${data.workspace_name} is live. The USDC was moved from your JaIre wallet to escrow automatically. Head to the session screen to track your time.`,
+          booking_status: "confirmed",
+          escrow_tx: data.escrow_tx ?? null,
+          solana_explorer_url: explorerUrl,
+          amount_usdc: data.amount_usdc,
+          amount_ngn: data.amount_ngn,
+          message: `Booking confirmed! Your session at ${data.workspace_name} is live — ${data.amount_usdc?.toFixed(3)} USDC moved from your wallet to on-chain escrow.${explorerUrl ? ` Verify on Solana Explorer: ${explorerUrl}` : ""} Head to your session screen to track time. Booking ID: ${data.booking_id}`,
         });
       }
 
@@ -355,6 +362,90 @@ export const checkPaymentStatusTool = new DynamicStructuredTool({
   },
 });
 
+const SOLANA_EXPLORER = "https://explorer.solana.com/tx";
+
+export const getBookingTool = new DynamicStructuredTool({
+  name: "get_booking",
+  description: "Look up a booking by ID. Returns the booking status, on-chain escrow and settlement transaction links, amounts, and workspace details. Use this when the user asks about a specific booking's status or on-chain activity.",
+  schema: z.object({
+    booking_id: z.string().describe("The booking UUID returned by book_and_pay"),
+  }),
+  func: async ({ booking_id }) => {
+    try {
+      const res = await fetch(`${API_BASE}/bookings/${booking_id}`);
+      if (!res.ok) return JSON.stringify({ error: "Booking not found" });
+      const bk = await res.json() as any;
+
+      const escrowUrl = bk.escrow_tx_signature
+        ? `${SOLANA_EXPLORER}/${bk.escrow_tx_signature}?cluster=devnet`
+        : null;
+      const settleUrl = bk.settlement_tx_signature
+        ? `${SOLANA_EXPLORER}/${bk.settlement_tx_signature}?cluster=devnet`
+        : null;
+
+      return JSON.stringify({
+        booking_id: bk.id,
+        workspace: bk.workspace_name,
+        status: bk.status,
+        payment_method: bk.payment_method,
+        escrow_amount_usdc: bk.escrow_amount_usdc,
+        billed_amount_usdc: bk.billed_amount_usdc,
+        ngn_paid: bk.ngn_amount_paid,
+        check_in: bk.check_in_time,
+        check_out: bk.check_out_time,
+        escrow_tx: bk.escrow_tx_signature ?? null,
+        escrow_explorer_url: escrowUrl,
+        settlement_tx: bk.settlement_tx_signature ?? null,
+        settlement_explorer_url: settleUrl,
+        on_chain_summary: escrowUrl
+          ? `Escrow confirmed on Solana devnet: ${escrowUrl}${settleUrl ? ` | Settlement: ${settleUrl}` : ""}`
+          : "No on-chain transactions recorded yet.",
+      });
+    } catch (err: any) {
+      return JSON.stringify({ error: `Could not fetch booking: ${err?.message}` });
+    }
+  },
+});
+
+export const listUserBookingsTool = new DynamicStructuredTool({
+  name: "list_user_bookings",
+  description: "List all bookings for the current user. Returns booking status, on-chain tx links, and amounts. Use when the user asks about their booking history or current sessions.",
+  schema: z.object({
+    user_email: z.string().describe("User's email to filter bookings"),
+  }),
+  func: async ({ user_email }) => {
+    try {
+      const res = await fetch(`${API_BASE}/bookings`);
+      if (!res.ok) return JSON.stringify({ error: "Could not fetch bookings" });
+      const all = await res.json() as any[];
+      const userBookings = all.filter((b: any) =>
+        b.user_email?.toLowerCase() === user_email.toLowerCase()
+      );
+
+      const summary = userBookings.slice(0, 5).map((bk: any) => {
+        const escrowUrl = bk.escrow_tx_signature
+          ? `${SOLANA_EXPLORER}/${bk.escrow_tx_signature}?cluster=devnet`
+          : null;
+        return {
+          booking_id: bk.id,
+          workspace: bk.workspace_name,
+          status: bk.status,
+          payment_method: bk.payment_method,
+          escrow_usdc: bk.escrow_amount_usdc,
+          ngn_paid: bk.ngn_amount_paid,
+          check_in: bk.check_in_time,
+          escrow_explorer_url: escrowUrl,
+          session_url: `/session/${bk.id}`,
+        };
+      });
+
+      return JSON.stringify({ count: userBookings.length, bookings: summary });
+    } catch (err: any) {
+      return JSON.stringify({ error: `Could not list bookings: ${err?.message}` });
+    }
+  },
+});
+
 export const baireTools = [
   listWorkspacesTool,
   calculateBookingPriceTool,
@@ -362,6 +453,8 @@ export const baireTools = [
   getExchangeRateTool,
   getJaireInfoTool,
   bookAndPayTool,
+  getBookingTool,
+  listUserBookingsTool,
   initiatePaymentTool,
   checkPaymentStatusTool,
 ];
