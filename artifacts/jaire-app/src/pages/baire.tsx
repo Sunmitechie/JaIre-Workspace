@@ -1,10 +1,107 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Volume2, VolumeX, Keyboard, X, ExternalLink, RefreshCw } from "lucide-react";
+import { Send, Volume2, VolumeX, Keyboard, X, ExternalLink, RefreshCw, Users, Zap, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getUser } from "@/lib/auth";
 import { WalletPanel } from "@/components/wallet-panel";
+import { Link } from "wouter";
+
+import theHubImg from "@/assets/the-hub.png";
+import foundersSuiteImg from "@/assets/founders-suite.png";
+import blockchainLoungeImg from "@/assets/blockchain-lounge.png";
+import boardRoomImg from "@/assets/board-room.png";
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
+
+const WORKSPACE_DATA: Record<string, {
+  name: string; image: string; description: string;
+  hourly_rate_ngn: number; daily_rate_ngn: number; capacity: number;
+  amenities: string[]; id: string;
+}> = {
+  "ws-001": {
+    id: "ws-001", name: "The Hub — Open Floor", image: theHubImg,
+    description: "Vibrant open coworking area with high-speed Wi-Fi, natural lighting, and a buzzing community of builders.",
+    hourly_rate_ngn: 1500, daily_rate_ngn: 8000, capacity: 40,
+    amenities: ["High-speed Wi-Fi", "Power outlets", "Coffee bar", "Printing", "Lockers"],
+  },
+  "ws-002": {
+    id: "ws-002", name: "Founders Suite — Private Office", image: foundersSuiteImg,
+    description: "Fully equipped private office for focused deep work. Perfect for solo founders and small teams.",
+    hourly_rate_ngn: 3500, daily_rate_ngn: 18000, capacity: 4,
+    amenities: ["Dedicated desk", "Meeting room access", "Wi-Fi", "Climate control", "Whiteboard"],
+  },
+  "ws-003": {
+    id: "ws-003", name: "Blockchain Lounge — Crypto Corner", image: blockchainLoungeImg,
+    description: "Our signature space for Web3 builders — multiple monitors, fast internet, and a community of on-chain natives.",
+    hourly_rate_ngn: 2500, daily_rate_ngn: 12000, capacity: 12,
+    amenities: ["Dual monitors", "Ultra-fast Wi-Fi (1Gbps)", "Hardware wallet-friendly", "24/7 access", "Community Slack"],
+  },
+  "ws-004": {
+    id: "ws-004", name: "Board Room — Premium Meeting", image: boardRoomImg,
+    description: "Impress your clients and investors in our premium conference room with AV setup and whiteboard wall.",
+    hourly_rate_ngn: 8000, daily_rate_ngn: 50000, capacity: 12,
+    amenities: ["Projector & screen", "Video conferencing", "Whiteboard wall", "Catering available", "Receptionist"],
+  },
+};
+
+function extractWorkspaceIds(text: string): string[] {
+  const matches = [...text.matchAll(/\[\[WS:(ws-\d+)\]\]/gi)];
+  return [...new Set(matches.map((m) => m[1]!.toLowerCase()))];
+}
+
+function stripWorkspaceTags(text: string): string {
+  return text.replace(/\[\[WS:ws-\d+\]\]/gi, "").trim();
+}
+
+function WorkspaceCard({ wsId }: { wsId: string }) {
+  const ws = WORKSPACE_DATA[wsId];
+  if (!ws) return null;
+  return (
+    <Link href={`/workspaces`}>
+      <div
+        className="mt-3 rounded-2xl overflow-hidden cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.99] w-full max-w-xs"
+        style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)" }}
+      >
+        <div className="relative h-36 overflow-hidden">
+          <img src={ws.image} alt={ws.name} className="w-full h-full object-cover" />
+          <div className="absolute inset-0" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 60%)" }} />
+          <div className="absolute bottom-2 left-3 right-3">
+            <div className="text-white text-[13px] font-bold leading-tight">{ws.name}</div>
+          </div>
+        </div>
+        <div className="px-3 py-2.5 space-y-2">
+          <p className="text-[11px] text-muted-foreground leading-snug line-clamp-2">{ws.description}</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Users className="w-2.5 h-2.5" />
+              {ws.capacity} seats
+            </div>
+            <div className="text-primary font-bold text-[12px]">
+              ₦{ws.hourly_rate_ngn.toLocaleString()}<span className="font-normal text-[10px] text-muted-foreground">/hr</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {ws.amenities.slice(0, 3).map((a) => (
+              <span key={a} className="px-1.5 py-0.5 rounded-full text-[9px] font-medium"
+                style={{ background: "rgba(255,170,0,0.08)", color: "rgba(255,170,0,0.8)", border: "1px solid rgba(255,170,0,0.15)" }}>
+                {a}
+              </span>
+            ))}
+            {ws.amenities.length > 3 && (
+              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-medium"
+                style={{ background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.4)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                +{ws.amenities.length - 3} more
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 text-[10px] font-semibold pt-0.5"
+            style={{ color: "rgba(255,170,0,0.9)" }}>
+            <Zap className="w-2.5 h-2.5" /> Book with Baire <ArrowRight className="w-2.5 h-2.5 ml-auto opacity-50" />
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
 
 interface Message {
   role: "user" | "baire";
@@ -527,23 +624,27 @@ export default function Baire() {
             style={{ scrollBehavior: "smooth" }}>
             <div className="max-w-2xl mx-auto space-y-4">
               {messages.map((msg, i) => {
-                const paymentUrl = msg.role === "baire" && !msg.isStreaming ? extractPaymentUrl(msg.content) : null;
-                const solanaUrl = msg.role === "baire" && !msg.isStreaming ? extractSolanaExplorerUrl(msg.content) : null;
+                const isBaire = msg.role === "baire";
+                const settled = isBaire && !msg.isStreaming;
+                const paymentUrl = settled ? extractPaymentUrl(msg.content) : null;
+                const solanaUrl = settled ? extractSolanaExplorerUrl(msg.content) : null;
+                const wsIds = settled ? extractWorkspaceIds(msg.content) : [];
+                const displayText = isBaire ? stripWorkspaceTags(msg.content) : msg.content;
                 return (
                   <div key={i} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
-                    {msg.role === "baire" && (
+                    {isBaire && (
                       <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-1"
                         style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.3), rgba(56,189,248,0.3))",
                           border: "1px solid rgba(139,92,246,0.3)", color: "hsl(262 83% 76%)" }}>
                         B
                       </div>
                     )}
-                    <div className={cn("px-4 py-3 rounded-2xl text-[15px] leading-relaxed max-w-[82%]",
-                      msg.role === "user" ? "rounded-tr-sm" : "rounded-tl-sm")}
+                    <div className={cn("rounded-2xl text-[15px] leading-relaxed max-w-[82%]",
+                      msg.role === "user" ? "rounded-tr-sm px-4 py-3" : "rounded-tl-sm px-4 py-3")}
                       style={msg.role === "user"
                         ? { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.09)" }
                         : { background: "rgba(139,92,246,0.09)", border: "1px solid rgba(139,92,246,0.2)" }}>
-                      {msg.content || (msg.isStreaming ? null : "…")}
+                      {displayText || (msg.isStreaming ? null : "…")}
                       {msg.isStreaming && !msg.content && (
                         <div className="flex gap-1.5 py-1">
                           {[0, 1, 2].map((j) => (
@@ -554,6 +655,12 @@ export default function Baire() {
                       )}
                       {msg.isStreaming && msg.content && (
                         <span className="inline-block w-0.5 h-4 bg-current opacity-60 ml-0.5 animate-pulse align-bottom" />
+                      )}
+                      {/* Workspace preview cards */}
+                      {wsIds.length > 0 && (
+                        <div className={cn("flex gap-3 flex-wrap", wsIds.length > 1 ? "mt-3" : "")}>
+                          {wsIds.map((id) => <WorkspaceCard key={id} wsId={id} />)}
+                        </div>
                       )}
                       {/* Paystack payment button */}
                       {paymentUrl && (
