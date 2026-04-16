@@ -291,7 +291,7 @@ React + Vite app at `/` (port 24196 in dev). Dark fintech aesthetic — Solana G
 - `/workspaces` — Browse all 4 workspaces (NGN + USDC rates, availability badges, AI-generated images)
 - `/workspaces/:id` — Workspace detail: availability calendar, amenities, book CTA
 - `/book/:workspaceId` — Booking flow: duration + payment method (Paystack/USDC wallet)
-- `/session/:bookingId` — Live session: polls every 2s, ticking clock + real-time cost in USDC & NGN, checkout CTA
+- `/session/:bookingId` — Multi-state session page: pending (awaiting payment), confirmed (escrowed, scan QR to check in), active (live timer + per-second cost), completed (settlement tx link)
 - `/bookings` — Booking history with dates, durations, amounts
 - `/baire` — Chat UI with Baire AI concierge (typing indicator, message bubbles)
 - `/wallet` — Web3Auth invisible wallet: USDC/SOL balance, fund via Paystack (NGN→USDC)
@@ -324,16 +324,35 @@ React + Vite app at `/` (port 24196 in dev). Dark fintech aesthetic — Solana G
 
 ## Transaction Pipeline (Phase 3 — Real)
 
-### Payment flow
-1. User asks Baire to book → Baire calls `initiate_payment` tool
-2. `POST /api/payments/initiate` → Paystack `initialize_transaction` → returns checkout URL
-3. User pays NGN via Paystack → Paystack fires `charge.success` webhook
-4. `POST /api/payments/webhook` → validates HMAC → calls MPC sidecar `POST /mpc/fund-by-address`
-5. MPC sidecar treasury sends USDC to user wallet on devnet → stores `tx_signature`
+### Booking status state machine
+- `pending` — booking created, Paystack payment not yet confirmed
+- `confirmed` — Paystack payment received + USDC escrowed (vault locked), awaiting physical scan-in
+- `active` — user physically checked in (QR scan), per-second billing running
+- `completed` — checked out, 85/15 USDC split settled on-chain
 
-### Escrow flow (QR check-in/checkout)
-- **Check-in**: QR scanned → `POST /qr/checkin` → MPC sidecar `POST /mpc/fund-by-address` moves escrow USDC (8h cap) from user → vault → booking created with `escrow_tx_signature`
-- **Checkout**: QR scanned → actual seconds calculated → `billedUsdc` computed → MPC sidecar refunds excess USDC vault → user → booking completed with `settlement_tx_signature`
+### Payment + escrow flow (Paystack path)
+1. User clicks "Book Now" → `POST /api/payments/book-with-balance` → Paystack `initialize_transaction` → returns access_code + authorization_url
+2. Frontend opens Paystack popup (inline JS) → user pays NGN
+3. `onSuccess` callback → polls `GET /api/payments/status/{reference}` every 5s
+4. Paystack fires `charge.success` webhook OR status endpoint verifies directly
+5. `processSuccessfulPayment()` runs: treasury → user wallet (fund), then user wallet → vault (escrow)
+6. Booking → `confirmed`. Booking holds `escrow_tx_signature`.
+7. User physically arrives → scans QR code → `POST /api/qr/checkin` → existing `confirmed` booking promoted to `active` (checkInTime set NOW — billing starts)
+8. User scans out → `POST /api/qr/checkout` → per-second billing calculated → vault refunds excess USDC → booking `completed` with `settlement_tx_signature`
+
+### Wallet payment flow (direct USDC)
+1. `book-with-balance` checks wallet balance via MPC sidecar
+2. If balance ≥ escrow AND `verifierId` in DB → calls `/mpc/internal/escrow` directly
+3. Booking → `confirmed`, `escrow_tx_signature` stored; timer starts only after QR scan-in
+
+### AI (Baire)
+- Model: OpenAI GPT-4o (switched from Groq llama-3.3-70b)
+- Non-streaming invoke → word-by-word yield (avoids Groq streaming + tool call format bug)
+
+### Paystack webhook setup (required for production)
+- Set webhook URL in Paystack dashboard to: `{APP_URL}/api/payments/webhook`
+- In dev: status polling (`GET /api/payments/status/{reference}`) verifies with Paystack directly as fallback
+- Webhook HMAC key: `PAYSTACK_TEST_API_KEY` (same key used for API calls)
 
 ### FX model (hidden from user)
 - Market rate: 1600 NGN/USDC

@@ -44,10 +44,10 @@ Always use the user's name and email from context when booking.`;
 
 function getBaireModel(): ChatOpenAI {
   return new ChatOpenAI({
-    model: "llama-3.3-70b-versatile",
+    model: "gpt-4o",
     configuration: {
-      baseURL: "https://api.groq.com/openai/v1",
-      apiKey: process.env["GROQ_API_KEY"],
+      baseURL: "https://api.openai.com/v1",
+      apiKey: process.env["OPENAI_API_KEY"],
     },
     maxTokens: 512,
     streaming: false,

@@ -392,25 +392,15 @@ router.post("/payments/book-with-balance", async (req, res) => {
         const escrowData = (await escrowRes.json()) as { tx_signature?: string };
         const escrowTx = escrowData.tx_signature ?? null;
 
-        // Confirm booking
+        // Funds locked in vault — booking is CONFIRMED, waiting for physical scan-in.
+        // Do NOT set checkInTime here; the timer only starts on QR check-in.
         await db.update(bookings).set({
-          status: "active",
-          checkInTime: new Date(),
+          status: "confirmed",
           escrowTxSignature: escrowTx,
           paymentMethod: "usdc_wallet",
         }).where(eq(bookings.id, bookingId));
 
-        // Log activity events
-        await db.insert(activityEvents).values({
-          id: randomUUID(),
-          eventType: "check_in",
-          workspaceId: workspace_id,
-          workspaceName: ws.name,
-          userId: user_email,
-          userName: user_name ?? "Guest",
-          amountUsdc: null,
-          amountNgn: null,
-        });
+        // Log the payment / escrow event
         await db.insert(activityEvents).values({
           id: randomUUID(),
           eventType: "payment",
@@ -422,14 +412,15 @@ router.post("/payments/book-with-balance", async (req, res) => {
           amountNgn: amountNgn,
         });
 
-        console.log(`[book-with-balance] Booking ${bookingId} confirmed from wallet, escrow tx: ${escrowTx}`);
+        console.log(`[book-with-balance] Booking ${bookingId} confirmed (wallet), escrow tx: ${escrowTx}`);
 
         return res.json({
           method: "wallet",
           booking_id: bookingId,
           workspace_name: ws.name,
-          booking_status: "active",
+          booking_status: "confirmed",
           escrow_tx: escrowTx,
+          solana_explorer_url: escrowTx ? `https://explorer.solana.com/tx/${escrowTx}?cluster=devnet` : null,
           amount_usdc: escrowUsdc,
           amount_ngn: amountNgn,
           wallet_balance_usdc: walletBalanceUsdc,
@@ -445,6 +436,8 @@ router.post("/payments/book-with-balance", async (req, res) => {
     const amountKobo = Math.round(amountNgn * 100);
     const amountUsdc = ngnToUsdc(amountNgn);
 
+    const appUrl = process.env["APP_URL"] ?? `https://${process.env["REPLIT_DEV_DOMAIN"] ?? "localhost"}`;
+
     const psRes = await fetch(`${PAYSTACK_BASE}/transaction/initialize`, {
       method: "POST",
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}`, "Content-Type": "application/json" },
@@ -453,7 +446,10 @@ router.post("/payments/book-with-balance", async (req, res) => {
         amount: amountKobo,
         reference,
         currency: "NGN",
+        callback_url: `${appUrl}/session/${bookingId}`,
         metadata: {
+          booking_id: bookingId,
+          wallet_address: userWalletAddress ?? "",
           custom_fields: [
             { display_name: "Booking ID", variable_name: "booking_id", value: bookingId },
             { display_name: "Wallet", variable_name: "wallet_address", value: userWalletAddress ?? "" },
@@ -585,11 +581,12 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   const escrowTx = escrowData.tx_signature;
   console.log(`[payment] Escrow tx: ${escrowTx}`);
 
-  // Update booking: mark as confirmed, save escrow tx
+  // Update booking: funds locked in vault — CONFIRMED, waiting for QR scan-in.
+  // The timer only starts when the user physically scans in at the workspace.
   await db
     .update(bookings)
     .set({
-      status: "active",  // booking confirmed + escrowed — ready for check-in
+      status: "confirmed",
       escrowTxSignature: escrowTx ?? null,
       escrowAmountUsdc: escrowAmount,
       ngnAmountPaid: payment.amountNgn,
@@ -597,7 +594,7 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     })
     .where(eq(bookings.id, bookingId));
 
-  console.log(`[payment] Booking ${bookingId} confirmed with escrow`);
+  console.log(`[payment] Booking ${bookingId} confirmed + escrowed. tx=${escrowTx}`);
 }
 
 export default router;

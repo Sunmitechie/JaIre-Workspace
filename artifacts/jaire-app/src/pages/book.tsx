@@ -126,9 +126,9 @@ export default function BookWorkspace() {
 
       const result = await r.json() as BookResult;
 
-      // Path A: paid directly from wallet → session is live
+      // Path A: paid from wallet → funds escrowed, waiting for QR scan-in
       if (result.method === "wallet") {
-        toast.success(`Session started at ${result.workspace_name}!`);
+        toast.success(`Booking confirmed! USDC locked in escrow. Scan QR to check in.`);
         setLocation(`/session/${result.booking_id}`);
         return;
       }
