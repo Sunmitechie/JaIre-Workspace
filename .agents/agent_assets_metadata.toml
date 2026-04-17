@@ -1,5 +1,4 @@
 uploads = []
-outputs = []
 
 [[generated]]
 id = "plT-TRWVzqZb7X_VmoDBt"
@@ -30,3 +29,15 @@ id = "ZEwTsIwaUZo2OvusgVzG-"
 uri = "file://artifacts/jaire-pitch/public/hero-cover.png"
 type = "image"
 title = "generated_image"
+
+[[outputs]]
+id = "KXsp1Eriud4WsVX7_mp6d"
+uri = "file://.local/outputs/JaIre-Workspace--1-.pdf"
+type = "pdf"
+title = "JaIre-Workspace (1).pdf"
+
+[[outputs]]
+id = "8rd8ejkScYMRaxZhZ-GpC"
+uri = "file://.local/outputs/JaIre-Workspace--1-.pptx"
+type = "slides"
+title = "JaIre-Workspace (1).pptx"
