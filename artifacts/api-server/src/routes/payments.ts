@@ -639,15 +639,49 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   }
 
   if (!escrowUser?.verifierId) {
-    console.warn(`[payment] No verifier_id found for ${userEmail} / ${userWalletAddress} — skipping on-chain escrow`);
-    // Still mark booking as confirmed (funds were received) so user isn't stuck
-    await db.update(bookings).set({
-      status: "confirmed",
-      escrowAmountUsdc: booking.escrowAmountUsdc ?? amountUsdc,
-      ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
-      paymentMethod: "paystack",
-    }).where(eq(bookings.id, bookingId));
-    console.warn(`[payment] Booking ${bookingId} confirmed WITHOUT on-chain escrow (no verifier_id)`);
+    console.warn(`[payment] No verifier_id for ${userEmail} — falling back to direct treasury→vault escrow`);
+    const escrowAmount = booking.escrowAmountUsdc ?? amountUsdc;
+    const vaultAddress = process.env["JAIRE_VAULT_ADDRESS"];
+    if (vaultAddress) {
+      const directRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wallet_address: vaultAddress,
+          usdc_amount: escrowAmount,
+          reference,
+          memo: `JAIRE|EXCHANGE|${bookingId.slice(0, 8)}|${reference}|${escrowAmount}USDC`,
+        }),
+      });
+      if (directRes.ok) {
+        const directData = (await directRes.json()) as { tx_signature?: string | null };
+        await db.update(bookings).set({
+          status: "confirmed",
+          escrowTxSignature: directData.tx_signature ?? null,
+          escrowAmountUsdc: escrowAmount,
+          ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
+          paymentMethod: "paystack",
+        }).where(eq(bookings.id, bookingId));
+        console.log(`[payment] Booking ${bookingId} confirmed via fallback direct escrow. tx=${directData.tx_signature}`);
+      } else {
+        const errText = await directRes.text();
+        console.error(`[payment] Fallback escrow failed: ${errText} — confirming without on-chain escrow`);
+        await db.update(bookings).set({
+          status: "confirmed",
+          escrowAmountUsdc: escrowAmount,
+          ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
+          paymentMethod: "paystack",
+        }).where(eq(bookings.id, bookingId));
+      }
+    } else {
+      console.warn(`[payment] JAIRE_VAULT_ADDRESS not set — confirming booking ${bookingId} without on-chain escrow`);
+      await db.update(bookings).set({
+        status: "confirmed",
+        escrowAmountUsdc: booking.escrowAmountUsdc ?? amountUsdc,
+        ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
+        paymentMethod: "paystack",
+      }).where(eq(bookings.id, bookingId));
+    }
     return;
   }
 
