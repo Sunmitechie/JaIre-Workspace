@@ -3,6 +3,21 @@ import { db } from "@workspace/db";
 import { organizations, workspaces, bookings } from "@workspace/db";
 import { eq, and, desc, count, sql } from "drizzle-orm";
 import jwt from "jsonwebtoken";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+
+const UPLOADS_DIR = path.join(process.cwd(), "public", "uploads");
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+    cb(null, `ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+  },
+});
+const upload = multer({ storage, limits: { fileSize: 8 * 1024 * 1024 } });
 
 const router = Router();
 const JWT_SECRET = process.env["JWT_SECRET"] ?? "jaire-dev-secret";
@@ -263,6 +278,40 @@ router.patch("/workspaces/:id", requireOrgAuth, async (req: Request, res: Respon
     }).where(eq(workspaces.id, wsId)).returning();
 
     res.json({ workspace: updated });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── POST /api/org/upload ─────────────────────────────────────────────────────
+// Upload a workspace image; returns the URL path for storing in imageUrl
+router.post("/upload", requireOrgAuth, upload.single("image"), async (req: Request, res: Response) => {
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (!file) { res.status(400).json({ error: "No file uploaded" }); return; }
+  const url = `/api/org/uploads/${file.filename}`;
+  res.json({ url });
+});
+
+// ── GET /api/org/uploads/:filename ───────────────────────────────────────────
+router.get("/uploads/:filename", (req: Request, res: Response) => {
+  const filename = req.params["filename"]!;
+  if (!/^[\w\-. ]+$/.test(filename)) { res.status(400).json({ error: "Invalid filename" }); return; }
+  const filePath = path.join(UPLOADS_DIR, filename);
+  if (!fs.existsSync(filePath)) { res.status(404).json({ error: "File not found" }); return; }
+  res.sendFile(filePath);
+});
+
+// ── GET /api/org/wallet-balance ──────────────────────────────────────────────
+// Returns the org wallet address (balance fetched client-side via Solana RPC)
+router.get("/wallet-balance", requireOrgAuth, async (req: Request, res: Response) => {
+  const email = (req as any).orgEmail as string;
+  try {
+    const [org] = await db.select().from(organizations).where(eq(organizations.ownerEmail, email)).limit(1);
+    if (!org) { res.status(404).json({ error: "Org not found" }); return; }
+    res.json({
+      walletAddress: org.ownerWalletAddress ?? null,
+      kycStatus: org.kycStatus,
+    });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

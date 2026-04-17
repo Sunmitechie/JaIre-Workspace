@@ -1,5 +1,7 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { HumanMessage, SystemMessage, BaseMessage, AIMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage } from "@langchain/core/messages";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
 
 const JAIE_SYSTEM_PROMPT = `You are Jaie — JaIre's AI business partner for workspace providers and org admins.
 
@@ -18,11 +20,13 @@ Your job as Jaie:
 - Answer questions about KYC, verification, and going live
 - Give actionable insights: "Your Board Room has been empty 3 days — consider reducing its rate"
 - Explain the JaIre platform from the provider perspective
+- You CAN take direct actions: toggle workspace availability using your tools
 
 Voice rules (you may be rendered as text in a dashboard chat):
 - Keep responses concise — 2 to 4 sentences for simple questions, a bit more for complex ones
 - No markdown headers. Light use of bullet points is OK since this is a chat UI, not voice
 - Be direct. Org admins don't want fluff
+- When you use a tool to take an action, confirm it briefly
 
 What you KNOW about the org (injected into context):
 - Org name, KYC status, wallet address
@@ -36,9 +40,10 @@ What you CAN help with:
 - Explaining how their wallet receives settlements
 - Describing how to add a workspace (the form is already in the dashboard — guide them through it)
 - Explaining the on-chain memo format: JAIRE|SETTLE|<booking_id>|<amount>USDC|85PCT
+- Toggling workspace availability on or off (use the toggle_workspace_availability tool)
 
 What you CANNOT do:
-- You cannot make API calls or create bookings directly — point the admin to the dashboard UI for actions
+- You cannot set rates or create/delete workspaces — point the admin to the dashboard UI
 - You cannot verify KYC status manually — that's handled by the JaIre team
 
 Revenue and settlement facts:
@@ -71,7 +76,12 @@ export interface OrgContext {
   totalBookings?: number;
   revenueUsdc?: number;
   activeNow?: number;
-  workspaces?: { name: string; type: string; rateNgn: number; isAvailable: boolean }[];
+  workspaces?: { id: string; name: string; type: string; rateNgn: number; isAvailable: boolean }[];
+}
+
+export interface JaieToolImplementations {
+  toggleWorkspaceAvailability?: (workspaceId: string, available: boolean) => Promise<string>;
+  getBookingDetails?: (workspaceId: string) => Promise<string>;
 }
 
 function buildSystemPrompt(ctx?: OrgContext): string {
@@ -88,7 +98,7 @@ function buildSystemPrompt(ctx?: OrgContext): string {
   if (ctx.activeNow !== undefined) ctxLines.push(`Active sessions right now: ${ctx.activeNow}`);
   if (ctx.workspaces && ctx.workspaces.length > 0) {
     const wsList = ctx.workspaces.map(w =>
-      `  - ${w.name} (${w.type.replace("_", " ")}, ₦${w.rateNgn.toLocaleString()}/hr, ${w.isAvailable ? "available" : "offline"})`
+      `  - [ID: ${w.id}] ${w.name} (${w.type.replace("_", " ")}, ₦${w.rateNgn.toLocaleString()}/hr, ${w.isAvailable ? "available" : "offline"})`
     ).join("\n");
     ctxLines.push(`Workspaces:\n${wsList}`);
   }
@@ -100,13 +110,58 @@ function buildSystemPrompt(ctx?: OrgContext): string {
   return JAIE_SYSTEM_PROMPT + contextBlock;
 }
 
+function buildTools(impls?: JaieToolImplementations) {
+  const tools = [];
+
+  if (impls?.toggleWorkspaceAvailability) {
+    const impl = impls.toggleWorkspaceAvailability;
+    tools.push(
+      tool(
+        async ({ workspace_id, available }: { workspace_id: string; available: boolean }) => {
+          return impl(workspace_id, available);
+        },
+        {
+          name: "toggle_workspace_availability",
+          description: "Turn a workspace on (available for booking) or off (taken offline). Use when the admin asks to enable, disable, pause, or activate a workspace.",
+          schema: z.object({
+            workspace_id: z.string().describe("The workspace ID from the org context (starts with 'ws-')"),
+            available: z.boolean().describe("true = make available for booking, false = take offline"),
+          }),
+        }
+      )
+    );
+  }
+
+  if (impls?.getBookingDetails) {
+    const impl = impls.getBookingDetails;
+    tools.push(
+      tool(
+        async ({ workspace_id }: { workspace_id: string }) => {
+          return impl(workspace_id);
+        },
+        {
+          name: "get_booking_details",
+          description: "Get recent booking activity and stats for a specific workspace.",
+          schema: z.object({
+            workspace_id: z.string().describe("The workspace ID"),
+          }),
+        }
+      )
+    );
+  }
+
+  return tools;
+}
+
 export async function runJaieAgent(
   userMessage: string,
   history: { role: "user" | "assistant"; content: string }[] = [],
   orgCtx?: OrgContext,
+  toolImpls?: JaieToolImplementations,
 ): Promise<string> {
   const model = getJaieModel();
   const systemPrompt = buildSystemPrompt(orgCtx);
+  const tools = buildTools(toolImpls);
 
   const msgs: BaseMessage[] = [
     new SystemMessage(systemPrompt),
@@ -115,6 +170,26 @@ export async function runJaieAgent(
     ),
     new HumanMessage(userMessage),
   ];
+
+  if (tools.length > 0) {
+    const modelWithTools = model.bindTools(tools);
+    const response = await modelWithTools.invoke(msgs);
+
+    if (response.tool_calls && response.tool_calls.length > 0) {
+      const toolMsgs: BaseMessage[] = [response];
+      for (const tc of response.tool_calls) {
+        const matchingTool = tools.find(t => t.name === tc.name);
+        if (matchingTool) {
+          const result = await (matchingTool as any).invoke(tc.args);
+          toolMsgs.push(new ToolMessage({ content: String(result), tool_call_id: tc.id! }));
+        }
+      }
+      const finalResponse = await model.invoke([...msgs, ...toolMsgs]);
+      return (finalResponse.content as string).trim();
+    }
+
+    return (response.content as string).trim();
+  }
 
   const response = await model.invoke(msgs);
   return (response.content as string).trim();
@@ -124,9 +199,11 @@ export async function* runJaieAgentStream(
   userMessage: string,
   history: { role: "user" | "assistant"; content: string }[] = [],
   orgCtx?: OrgContext,
+  toolImpls?: JaieToolImplementations,
 ): AsyncGenerator<string> {
   const model = getJaieModel();
   const systemPrompt = buildSystemPrompt(orgCtx);
+  const tools = buildTools(toolImpls);
 
   const msgs: BaseMessage[] = [
     new SystemMessage(systemPrompt),
@@ -135,6 +212,33 @@ export async function* runJaieAgentStream(
     ),
     new HumanMessage(userMessage),
   ];
+
+  if (tools.length > 0) {
+    const modelWithTools = model.bindTools(tools);
+    const firstResponse = await modelWithTools.invoke(msgs);
+
+    if (firstResponse.tool_calls && firstResponse.tool_calls.length > 0) {
+      yield "⚙️ ";
+      const toolMsgs: BaseMessage[] = [firstResponse];
+      for (const tc of firstResponse.tool_calls) {
+        const matchingTool = tools.find(t => t.name === tc.name);
+        if (matchingTool) {
+          const result = await (matchingTool as any).invoke(tc.args);
+          toolMsgs.push(new ToolMessage({ content: String(result), tool_call_id: tc.id! }));
+        }
+      }
+      const stream = await model.stream([...msgs, ...toolMsgs]);
+      for await (const chunk of stream) {
+        const text = typeof chunk.content === "string" ? chunk.content : "";
+        if (text) yield text;
+      }
+      return;
+    }
+
+    const text = typeof firstResponse.content === "string" ? firstResponse.content : "";
+    if (text) yield text;
+    return;
+  }
 
   const stream = await model.stream(msgs);
   for await (const chunk of stream) {
