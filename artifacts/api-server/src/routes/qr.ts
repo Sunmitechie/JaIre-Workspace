@@ -325,8 +325,21 @@ router.post("/checkout", async (req, res) => {
 router.get("/generate/:workspaceId", async (req, res) => {
   try {
     const { workspaceId } = req.params;
-    const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
-    if (!ws || !ws.qrSecret) return res.status(404).json({ error: "Workspace not found" });
+    let [ws] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
+    if (!ws) return res.status(404).json({ error: "Workspace not found" });
+
+    // Auto-initialize qrSecret if missing — happens on first QR request for a workspace
+    if (!ws.qrSecret) {
+      const { randomBytes } = await import("crypto");
+      const newSecret = randomBytes(32).toString("hex");
+      const [updated] = await db
+        .update(workspaces)
+        .set({ qrSecret: newSecret })
+        .where(eq(workspaces.id, workspaceId))
+        .returning();
+      ws = updated ?? ws;
+      if (!ws.qrSecret) return res.status(500).json({ error: "Failed to initialize QR secret" });
+    }
 
     const slot = currentSlot();
     const hash = slotHash(ws.qrSecret, slot);

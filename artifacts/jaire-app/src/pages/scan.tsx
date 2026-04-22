@@ -48,17 +48,19 @@ export default function Scan() {
   }
 
   async function loadDemoQRs() {
-    const wsIds = ["ws-001", "ws-002", "ws-003"];
     const results: DemoQR[] = [];
-    for (const id of wsIds) {
-      try {
-        const res = await fetch(`${BASE_URL}/api/qr/generate/${id}`);
-        if (res.ok) {
-          const data = await res.json();
-          results.push(data as DemoQR);
+    try {
+      const wsRes = await fetch(`${BASE_URL}/api/workspaces`);
+      if (wsRes.ok) {
+        const wsData = await wsRes.json() as Array<{ id: string }>;
+        for (const ws of wsData.slice(0, 5)) {
+          try {
+            const res = await fetch(`${BASE_URL}/api/qr/generate/${ws.id}`);
+            if (res.ok) results.push(await res.json() as DemoQR);
+          } catch {}
         }
-      } catch {}
-    }
+      }
+    } catch {}
     setDemoQRs(results);
   }
 
