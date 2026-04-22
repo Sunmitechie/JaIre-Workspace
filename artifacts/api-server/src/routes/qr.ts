@@ -109,12 +109,13 @@ router.get("/org", requireOrgAuth, async (req: Request, res: Response) => {
 // ── POST /qr/checkin ─────────────────────────────────────────────────────────
 router.post("/checkin", async (req, res) => {
   try {
-    const { qr_data, user_id, user_name, user_email, user_wallet_address } = req.body as {
+    const { qr_data, user_id, user_name, user_email, user_wallet_address, verifier_id } = req.body as {
       qr_data?: string;
       user_id?: string;
       user_name?: string;
       user_email?: string;
       user_wallet_address?: string;
+      verifier_id?: string;  // Web3Auth verifier ID — used to derive MPC keypair for escrow lock
     };
 
     if (!qr_data) return res.status(400).json({ error: "qr_data is required" });
@@ -263,6 +264,46 @@ router.post("/checkin", async (req, res) => {
       message: "Welcome! Your session has started. USDC is in escrow.",
     });
 
+    // ── Escrow lock: user wallet → vault (async, does not block check-in) ────
+    // If verifier_id and wallet address are available, lock the pre-paid USDC
+    // into escrow immediately after check-in. The user's MPC keypair signs.
+    if (verifier_id && user_wallet_address && booking.escrowAmountUsdc && booking.escrowAmountUsdc > 0) {
+      (async () => {
+        try {
+          const plannedSec = (booking.plannedDurationHours ?? 8) * 3600;
+          const escrowRes = await fetch(`${MPC_SIDECAR}/mpc/escrow/initialize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              verifier_id,
+              user_wallet_address,
+              booking_id: booking.id,
+              planned_seconds: plannedSec,
+              escrow_usdc: booking.escrowAmountUsdc,
+            }),
+          });
+          if (escrowRes.ok) {
+            const ed = (await escrowRes.json()) as { tx_signature?: string | null };
+            if (ed.tx_signature) {
+              await db.update(bookings)
+                .set({ escrowTxSignature: ed.tx_signature })
+                .where(eq(bookings.id, booking.id));
+              console.log(`[checkin/escrow] ✓ Locked booking=${booking.id.slice(0, 8)} tx=${ed.tx_signature}`);
+            }
+          } else {
+            const errBody = await escrowRes.text();
+            console.warn(`[checkin/escrow] Lock failed booking=${booking.id.slice(0, 8)}: ${errBody}`);
+          }
+        } catch (e) {
+          console.warn("[checkin/escrow] Lock error:", e);
+        }
+      })();
+    } else {
+      console.log(
+        `[checkin/escrow] Skipping on-chain lock (verifier_id=${!!verifier_id} wallet=${!!user_wallet_address} escrow=${booking.escrowAmountUsdc})`,
+      );
+    }
+
     // ── MQTT: power ON all devices in this workspace ─────────────────────────
     if (ws.orgId) {
       (async () => {
@@ -363,48 +404,84 @@ router.post("/checkout", async (req, res) => {
       } catch {}
     }
 
-    // ── Vault → User (refund excess) ─────────────────────────────────────────
+    // ── Atomic escrow settlement: 85% → org, refund → user, 15% stays in vault ─
     let settleTxSignature: string | null = null;
-    if (walletAddr && refundUsdc > 0.000001) {
+    let settleHostUsdc = 0;
+    let settleRefundUsdc = refundUsdc;
+    let settleTreasuryUsdc = 0;
+
+    // Look up org wallet for the 85% payment
+    let orgWalletAddress: string | null = null;
+    if (ws.orgId) {
       try {
-        const settleRes = await fetch(`${MPC_SIDECAR}/mpc/vault-settle`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to_address: walletAddr, amount_usdc: refundUsdc }),
-        });
-        if (settleRes.ok) {
-          const sd = (await settleRes.json()) as { tx_signature?: string | null };
-          settleTxSignature = sd.tx_signature ?? null;
-        }
-      } catch (err) {
-        console.warn(`[checkout] Settle error:`, err);
+        const [org] = await db.select({ ownerWalletAddress: organizations.ownerWalletAddress })
+          .from(organizations).where(eq(organizations.id, ws.orgId)).limit(1);
+        orgWalletAddress = org?.ownerWalletAddress ?? null;
+      } catch (e) {
+        console.warn("[checkout] Org wallet lookup error:", e);
       }
     }
 
-    // ── Vault → Org wallet (85% revenue share) ───────────────────────────────
-    if (billedUsdc > 0.0001 && ws.orgId) {
-      (async () => {
-        try {
-          const [org] = await db.select({ ownerWalletAddress: organizations.ownerWalletAddress })
-            .from(organizations).where(eq(organizations.id, ws.orgId!)).limit(1);
-          if (org?.ownerWalletAddress) {
-            const orgShare = parseFloat((billedUsdc * 0.85).toFixed(6));
-            const memo = `JAIRE|SETTLE|${booking!.id.slice(0, 8)}|${orgShare}USDC|85PCT`;
-            const payRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ wallet_address: org.ownerWalletAddress, usdc_amount: orgShare, memo }),
-            });
-            if (payRes.ok) {
-              const pd = (await payRes.json()) as { tx_signature?: string | null };
-              console.log(`[checkout] Org paid ${orgShare} USDC (85%). tx=${pd.tx_signature}`);
-            }
-          }
-        } catch (e) {
-          console.warn(`[checkout] Org settlement error:`, e);
+    if (orgWalletAddress && walletAddr && escrowUsdc > 0) {
+      // Atomic: vault → org (85%) + vault → user (refund) in one tx
+      try {
+        const settleRes = await fetch(`${MPC_SIDECAR}/mpc/escrow/settle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_wallet_address: walletAddr,
+            booking_id: booking.id,
+            deposit_usdc: escrowUsdc,
+            planned_seconds: (booking.plannedDurationHours ?? 8) * 3600,
+            duration_seconds: elapsedSeconds,
+            org_wallet_address: orgWalletAddress,
+          }),
+        });
+        if (settleRes.ok) {
+          const sd = (await settleRes.json()) as {
+            tx_signature?: string | null;
+            host_amount_usdc?: number;
+            treasury_amount_usdc?: number;
+            refund_usdc?: number;
+          };
+          settleTxSignature    = sd.tx_signature ?? null;
+          settleHostUsdc       = sd.host_amount_usdc ?? 0;
+          settleTreasuryUsdc   = sd.treasury_amount_usdc ?? 0;
+          settleRefundUsdc     = sd.refund_usdc ?? refundUsdc;
+          console.log(
+            `[checkout] ✓ Atomic settle tx=${settleTxSignature} ` +
+            `org=${settleHostUsdc} treasury=${settleTreasuryUsdc} refund=${settleRefundUsdc}`,
+          );
+        } else {
+          const errBody = await settleRes.text();
+          console.warn(`[checkout] Escrow settle failed: ${errBody}`);
         }
-      })();
+      } catch (err) {
+        console.warn("[checkout] Escrow settle error:", err);
+      }
+    } else {
+      // Fallback: no org wallet or no wallet addr — just refund user from vault
+      if (walletAddr && refundUsdc > 0.000001) {
+        try {
+          const settleRes = await fetch(`${MPC_SIDECAR}/mpc/vault-settle`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ to_address: walletAddr, amount_usdc: refundUsdc }),
+          });
+          if (settleRes.ok) {
+            const sd = (await settleRes.json()) as { tx_signature?: string | null };
+            settleTxSignature = sd.tx_signature ?? null;
+          }
+        } catch (err) {
+          console.warn("[checkout] Fallback vault-settle error:", err);
+        }
+      }
+      console.warn(`[checkout] Org wallet missing for ${ws.orgId ?? "unknown"} — 85% kept in vault`);
     }
+
+    // Log vault 15% retention
+    const vaultRetention = parseFloat((billedUsdc * 0.15).toFixed(6));
+    console.log(`[checkout] Vault retention: ${vaultRetention} USDC (15% of ${billedUsdc}) → JaIre vault 41sVtGn…`);
 
     await db
       .update(bookings)
@@ -433,10 +510,6 @@ router.post("/checkout", async (req, res) => {
     const h = Math.floor(elapsedSeconds / 3600);
     const m = Math.floor((elapsedSeconds % 3600) / 60);
     const s = elapsedSeconds % 60;
-
-    // Log vault 15% retention explicitly
-    const vaultRetention = parseFloat((billedUsdc * 0.15).toFixed(6));
-    console.log(`[checkout] Vault retention: ${vaultRetention} USDC (15% of ${billedUsdc}) → JaIre vault 41sVtGn…`);
 
     res.json({
       booking_id: booking.id,

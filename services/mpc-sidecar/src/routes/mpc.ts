@@ -13,6 +13,7 @@ import {
   signUserUSDCTransfer,
   vaultToUserTransfer,
 } from "../services/solana-wallet.js";
+import { initializeEscrow, settleSession } from "../services/anchor-escrow.js";
 
 const router = Router();
 
@@ -326,6 +327,111 @@ router.post("/internal/escrow", async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[mpc/internal/escrow] error:", message);
     res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * POST /mpc/escrow/initialize   [INTERNAL — server-to-server only]
+ *
+ * Lock user USDC into session escrow at QR check-in.
+ * User's MPC-derived keypair signs the transfer; treasury pays gas.
+ *
+ * Body: {
+ *   verifier_id:         string   Web3Auth verifier ID
+ *   user_wallet_address: string   User's on-chain wallet
+ *   booking_id:          string   Booking UUID
+ *   planned_seconds:     number   Pre-paid duration in seconds
+ *   escrow_usdc:         number   USDC to lock
+ *   mint?:               string   Token mint (defaults to JAIRE_TEST_MINT)
+ * }
+ */
+router.post("/escrow/initialize", async (req: Request, res: Response) => {
+  try {
+    const { verifier_id, user_wallet_address, booking_id, planned_seconds, escrow_usdc, mint } = req.body as {
+      verifier_id?:         string;
+      user_wallet_address?: string;
+      booking_id?:          string;
+      planned_seconds?:     number;
+      escrow_usdc?:         number;
+      mint?:                string;
+    };
+
+    if (!verifier_id)         { res.status(400).json({ error: "verifier_id required" });         return; }
+    if (!user_wallet_address) { res.status(400).json({ error: "user_wallet_address required" }); return; }
+    if (!booking_id)          { res.status(400).json({ error: "booking_id required" });           return; }
+    if (!planned_seconds || planned_seconds <= 0) { res.status(400).json({ error: "planned_seconds must be > 0" }); return; }
+    if (!escrow_usdc || escrow_usdc <= 0)         { res.status(400).json({ error: "escrow_usdc must be > 0" });     return; }
+
+    const result = await initializeEscrow(
+      verifier_id, user_wallet_address, booking_id, planned_seconds, escrow_usdc, mint,
+    );
+
+    if (!result.success) {
+      res.status(500).json(result);
+      return;
+    }
+
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[mpc/escrow/initialize] error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /mpc/escrow/settle   [INTERNAL — server-to-server only]
+ *
+ * Atomically settle session escrow at QR check-out:
+ *   vault → 85 % org wallet + refund → user wallet + 15 % stays in vault.
+ *
+ * Body: {
+ *   user_wallet_address:  string   User's on-chain wallet
+ *   booking_id:           string   Booking UUID
+ *   deposit_usdc:         number   USDC locked at check-in
+ *   planned_seconds:      number   Pre-paid duration
+ *   duration_seconds:     number   Actual billed duration (from MQTT)
+ *   org_wallet_address:   string   Org owner wallet for 85 %
+ *   mint?:                string   Token mint
+ * }
+ */
+router.post("/escrow/settle", async (req: Request, res: Response) => {
+  try {
+    const {
+      user_wallet_address, booking_id, deposit_usdc,
+      planned_seconds, duration_seconds, org_wallet_address, mint,
+    } = req.body as {
+      user_wallet_address?:  string;
+      booking_id?:           string;
+      deposit_usdc?:         number;
+      planned_seconds?:      number;
+      duration_seconds?:     number;
+      org_wallet_address?:   string;
+      mint?:                 string;
+    };
+
+    if (!user_wallet_address)  { res.status(400).json({ error: "user_wallet_address required" });  return; }
+    if (!booking_id)           { res.status(400).json({ error: "booking_id required" });            return; }
+    if (deposit_usdc === undefined || deposit_usdc <= 0) { res.status(400).json({ error: "deposit_usdc must be > 0" }); return; }
+    if (!planned_seconds || planned_seconds <= 0)        { res.status(400).json({ error: "planned_seconds required" });  return; }
+    if (duration_seconds === undefined || duration_seconds < 0) { res.status(400).json({ error: "duration_seconds required" }); return; }
+    if (!org_wallet_address)   { res.status(400).json({ error: "org_wallet_address required" });    return; }
+
+    const result = await settleSession(
+      user_wallet_address, booking_id, deposit_usdc,
+      planned_seconds, duration_seconds, org_wallet_address, mint,
+    );
+
+    if (!result.success) {
+      res.status(500).json(result);
+      return;
+    }
+
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[mpc/escrow/settle] error:", message);
+    res.status(500).json({ error: message });
   }
 });
 

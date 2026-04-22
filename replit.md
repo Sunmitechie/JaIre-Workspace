@@ -73,7 +73,10 @@ services/
     index.ts                     # Entry point — port 9000
     config.ts                    # Reads WEB3AUTH_* env vars
     services/mpc-service.ts      # JWT verify, factor share, wallet derivation
-    routes/mpc.ts                # POST /mpc/factor-share, /mpc/wallet, /mpc/verify-token
+    services/solana-wallet.ts    # Solana transfers, vault/treasury keypair management
+    services/anchor-escrow.ts    # Escrow service: initializeEscrow + settleSession (85/15 atomic)
+    services/memo.ts             # Shared SPL Memo instruction builder
+    routes/mpc.ts                # All MPC endpoints including /mpc/escrow/initialize & /mpc/escrow/settle
     routes/health.ts             # GET /health
 
 programs/

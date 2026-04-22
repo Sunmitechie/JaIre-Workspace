@@ -582,15 +582,10 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     return;
   }
 
-  // ── Booking-linked payment: exchange NGN → USDC → JaIre vault ────────────
-  // The vault (JAIRE_VAULT_ADDRESS) acts as the escrow account.
-  // Treasury mints USDC directly into the vault — atomic, single transaction.
-  const vaultAddress = await getVaultAddress();
-  if (!vaultAddress) {
-    console.error(`[payment] JAIRE_VAULT_ADDRESS not available — cannot escrow for booking ${bookingId}`);
-    return;
-  }
-
+  // ── Booking-linked payment: exchange NGN → USDC → user wallet ───────────
+  // The exchange (mint) lands in the user's invisible wallet.
+  // At QR check-in, the Anchor program transfers user wallet → PDA escrow.
+  // This keeps the exchange and escrow as two distinct on-chain steps.
   const [booking] = await db.select().from(bookings).where(eq(bookings.id, bookingId));
   if (!booking) {
     console.warn(`[payment] Booking ${bookingId} not found`);
@@ -598,48 +593,49 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   }
   const escrowUsdc = booking.escrowAmountUsdc ?? amountUsdc;
 
+  if (!userWalletAddress) {
+    console.error(`[payment] No wallet address for booking ${bookingId} — cannot mint USDC`);
+    return;
+  }
+
   console.log(
-    `[payment] Exchange: Treasury mints ${escrowUsdc} USDC → JaIre vault ` +
-    `${vaultAddress.slice(0, 8)}… (booking ${bookingId.slice(0, 8)}, ref ${reference})`
+    `[payment] Exchange: Treasury mints ${escrowUsdc} USDC → user wallet ` +
+    `${userWalletAddress.slice(0, 8)}… (booking ${bookingId.slice(0, 8)}, ref ${reference})`
   );
 
   const exchangeRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      wallet_address: vaultAddress,
+      wallet_address: userWalletAddress,
       usdc_amount: escrowUsdc,
       reference,
-      memo: `JAIRE|ESCROW|${bookingId.slice(0, 8)}|${escrowUsdc}USDC|${userEmail ?? reference}`,
+      memo: `JAIRE|TOPUP|${bookingId.slice(0, 8)}|${escrowUsdc}USDC`,
     }),
   });
 
   if (!exchangeRes.ok) {
-    const errText = await exchangeRes.text();
-    console.error(`[payment] Exchange→vault FAILED for booking ${bookingId}: ${errText}`);
+    console.error(`[payment] Exchange→user wallet FAILED for booking ${bookingId}:`, await exchangeRes.text());
     return;
   }
 
   const exchangeData = (await exchangeRes.json()) as { tx_signature?: string | null };
-  const escrowTx = exchangeData.tx_signature ?? null;
+  const topupTx = exchangeData.tx_signature ?? null;
 
-  // Record tx on payment row
+  // Record the top-up tx; booking stays "pending" until QR check-in triggers the PDA escrow
   await db.update(payments)
-    .set({ txSignature: escrowTx, updatedAt: new Date() })
+    .set({ txSignature: topupTx, updatedAt: new Date() })
     .where(eq(payments.reference, reference));
 
-  // Confirm the booking — vault now holds the escrow
   await db.update(bookings).set({
     status: "confirmed",
-    escrowTxSignature: escrowTx,
-    escrowAmountUsdc: escrowUsdc,
     ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
     paymentMethod: "paystack",
   }).where(eq(bookings.id, bookingId));
 
   console.log(
     `[payment] ✓ Booking ${bookingId.slice(0, 8)} confirmed. ` +
-    `Vault ${vaultAddress.slice(0, 8)}… holds ${escrowUsdc} USDC escrow. tx=${escrowTx}`
+    `${escrowUsdc} USDC in user wallet ${userWalletAddress.slice(0, 8)}… ready for PDA escrow at check-in. tx=${topupTx}`
   );
 }
 
