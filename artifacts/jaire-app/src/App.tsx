@@ -22,6 +22,7 @@ import NotFound from "@/pages/not-found";
 import OrgSignup from "@/pages/org-signup";
 import OrgKyc from "@/pages/org-kyc";
 import OrgDashboard from "@/pages/org-dashboard";
+import AdminDashboard from "@/pages/admin";
 
 const queryClient = new QueryClient();
 
@@ -65,6 +66,7 @@ function Router() {
         <Route path="/bookings">{() => <ProtectedRoute component={Bookings} />}</Route>
         <Route path="/baire">{() => <ProtectedRoute component={Baire} />}</Route>
         <Route path="/analytics">{() => <ProtectedRoute component={Analytics} />}</Route>
+        <Route path="/admin" component={AdminDashboard} />
         <Route component={NotFound} />
       </Switch>
     </Layout>
