@@ -168,8 +168,9 @@ export default function OrgDashboard() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "wallet" && !walletAddress) {
-      loadWalletBalance();
+    if (activeTab === "wallet") {
+      if (!walletAddress) loadWalletBalance();
+      else loadUsdcBalance(walletAddress);
     }
     if (activeTab === "devices") {
       loadDevices();
@@ -223,10 +224,10 @@ export default function OrgDashboard() {
   const loadUsdcBalance = async (address: string) => {
     setBalanceLoading(true);
     try {
-      const res = await fetch("http://localhost:9000/mpc/balance/" + address);
+      const res = await fetch(`${API}/wallet/balance?address=${address}`);
       if (res.ok) {
         const data = await res.json();
-        setUsdcBalance(data.usdc_balance ?? 0);
+        setUsdcBalance(data.balance_usdc ?? data.usdc_balance ?? 0);
       }
     } catch {}
     setBalanceLoading(false);
