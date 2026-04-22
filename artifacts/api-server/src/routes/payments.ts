@@ -535,31 +535,33 @@ async function getVaultAddress(): Promise<string | null> {
 }
 
 // ── Core payment processor ─────────────────────────────────────────────────
-// Called after Paystack confirms a payment. Two possible flows:
+// Called after Paystack confirms an NGN payment. Two clear flows:
 //
-//  No booking (top-up only):
-//    Treasury → User wallet
+//  No booking (wallet top-up):
+//    Treasury mints USDC → User wallet
+//    User can then book separately.
 //
 //  Booking-linked payment:
-//    Path A (has wallet + verifierId):
-//      Step 1: Treasury → User wallet  (exchange/top-up record)
-//      Step 2: User wallet → Vault     (on-chain escrow)
-//      Fallback: if Step 2 fails → Path B
+//    Step 1 — Exchange: Treasury mints USDC equivalent into JaIre vault
+//              (JAIRE_VAULT_ADDRESS from secrets). This is the NGN→USDC
+//              conversion. One atomic transaction.
+//    Step 2 — Booking confirmed: vault holds the escrow until checkout.
+//    No intermediate user-wallet step. Clean and atomic.
 //
-//    Path B (no wallet, no verifierId, or Path A failed):
-//      Treasury → Vault directly       (direct exchange→escrow)
+//  At checkout: vault pays 85% to org wallet, refunds excess to user.
 //
-// Booking is ONLY confirmed after escrow succeeds.
+// Booking is ONLY confirmed after escrow lands in vault.
 async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   const { userWalletAddress, amountUsdc, reference, bookingId, userEmail } = payment;
 
   // ── No booking linked: wallet top-up only ────────────────────────────────
+  // User paid NGN to top up their USDC wallet. Send USDC directly to their wallet.
   if (!bookingId) {
     if (!userWalletAddress) {
       console.log(`[payment] Top-up with no wallet for ${reference} — nothing to do`);
       return;
     }
-    console.log(`[payment] Top-up: Treasury → User wallet (${amountUsdc} USDC)`);
+    console.log(`[payment] Top-up: Treasury mints ${amountUsdc} USDC → user wallet ${userWalletAddress.slice(0, 8)}`);
     const fundRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -573,17 +575,19 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     if (fundRes.ok) {
       const fd = (await fundRes.json()) as { tx_signature?: string | null };
       await db.update(payments).set({ txSignature: fd.tx_signature ?? null, updatedAt: new Date() }).where(eq(payments.reference, reference));
-      console.log(`[payment] Top-up tx: ${fd.tx_signature}`);
+      console.log(`[payment] Top-up confirmed. tx=${fd.tx_signature}`);
     } else {
       console.error(`[payment] Top-up failed:`, await fundRes.text());
     }
     return;
   }
 
-  // ── Booking-linked payment: escrow MUST land in vault ────────────────────
+  // ── Booking-linked payment: exchange NGN → USDC → JaIre vault ────────────
+  // The vault (JAIRE_VAULT_ADDRESS) acts as the escrow account.
+  // Treasury mints USDC directly into the vault — atomic, single transaction.
   const vaultAddress = await getVaultAddress();
   if (!vaultAddress) {
-    console.error(`[payment] Cannot determine vault address — escrow cannot proceed for ${reference}`);
+    console.error(`[payment] JAIRE_VAULT_ADDRESS not available — cannot escrow for booking ${bookingId}`);
     return;
   }
 
@@ -592,100 +596,51 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     console.warn(`[payment] Booking ${bookingId} not found`);
     return;
   }
-  const escrowAmount = booking.escrowAmountUsdc ?? amountUsdc;
+  const escrowUsdc = booking.escrowAmountUsdc ?? amountUsdc;
 
-  // Look up verifier_id BEFORE deciding the path (avoids funding wallet we can't then escrow)
-  let escrowUser: typeof users.$inferSelect | undefined;
-  if (userEmail) {
-    const [byEmail] = await db.select().from(users).where(eq(users.email, userEmail));
-    escrowUser = byEmail;
-  }
-  if (!escrowUser?.verifierId && userWalletAddress) {
-    const [byWallet] = await db.select().from(users).where(eq(users.walletAddress, userWalletAddress));
-    if (byWallet) escrowUser = byWallet;
-  }
+  console.log(
+    `[payment] Exchange: Treasury mints ${escrowUsdc} USDC → JaIre vault ` +
+    `${vaultAddress.slice(0, 8)}… (booking ${bookingId.slice(0, 8)}, ref ${reference})`
+  );
 
-  // ── Path A: has wallet + verifierId → fund wallet, then on-chain escrow ──
-  if (userWalletAddress && escrowUser?.verifierId) {
-    console.log(`[payment] Path A: Treasury → User wallet (${amountUsdc} USDC)`);
-    const fundRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        wallet_address: userWalletAddress,
-        usdc_amount: amountUsdc,
-        reference,
-        memo: `JAIRE|TOPUP|${bookingId.slice(0, 8)}|${reference}|${amountUsdc}USDC`,
-      }),
-    });
-
-    if (fundRes.ok) {
-      const fd = (await fundRes.json()) as { tx_signature?: string | null };
-      await db.update(payments).set({ txSignature: fd.tx_signature ?? null, updatedAt: new Date() }).where(eq(payments.reference, reference));
-      console.log(`[payment] Path A wallet funded: ${fd.tx_signature}`);
-
-      // Brief pause for devnet transaction to land before escrowing
-      await new Promise(r => setTimeout(r, 2000));
-
-      console.log(`[payment] Path A Step 2: User wallet → Vault (${escrowAmount} USDC)`);
-      const escrowRes = await fetch(`${MPC_SIDECAR}/mpc/internal/escrow`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          verifier_id: escrowUser.verifierId,
-          amount_usdc: escrowAmount,
-          memo: `JAIRE|ESCROW|${bookingId.slice(0, 8)}|${escrowAmount}USDC`,
-        }),
-      });
-
-      if (escrowRes.ok) {
-        const ed = (await escrowRes.json()) as { tx_signature?: string };
-        await db.update(bookings).set({
-          status: "confirmed",
-          escrowTxSignature: ed.tx_signature ?? null,
-          escrowAmountUsdc: escrowAmount,
-          ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
-          paymentMethod: "paystack",
-        }).where(eq(bookings.id, bookingId));
-        console.log(`[payment] Booking ${bookingId} confirmed (Path A). escrow tx=${ed.tx_signature}`);
-        return;
-      }
-      console.error(`[payment] Path A MPC escrow failed — falling back to Path B`);
-    } else {
-      console.error(`[payment] Path A fund-wallet failed — falling back to Path B`);
-    }
-  }
-
-  // ── Path B: Direct Treasury → Vault (no wallet, no verifierId, or Path A failed) ─
-  console.log(`[payment] Path B: Treasury → Vault (${escrowAmount} USDC direct escrow)`);
-  const directRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
+  const exchangeRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       wallet_address: vaultAddress,
-      usdc_amount: escrowAmount,
+      usdc_amount: escrowUsdc,
       reference,
-      memo: `JAIRE|ESCROW|${bookingId.slice(0, 8)}|${reference}|${escrowAmount}USDC`,
+      memo: `JAIRE|ESCROW|${bookingId.slice(0, 8)}|${escrowUsdc}USDC|${userEmail ?? reference}`,
     }),
   });
 
-  if (!directRes.ok) {
-    console.error(`[payment] Path B FAILED — booking ${bookingId} NOT confirmed:`, await directRes.text());
+  if (!exchangeRes.ok) {
+    const errText = await exchangeRes.text();
+    console.error(`[payment] Exchange→vault FAILED for booking ${bookingId}: ${errText}`);
     return;
   }
 
-  const dd = (await directRes.json()) as { tx_signature?: string | null };
-  const directTx = dd.tx_signature ?? null;
-  await db.update(payments).set({ txSignature: directTx, updatedAt: new Date() }).where(eq(payments.reference, reference));
+  const exchangeData = (await exchangeRes.json()) as { tx_signature?: string | null };
+  const escrowTx = exchangeData.tx_signature ?? null;
+
+  // Record tx on payment row
+  await db.update(payments)
+    .set({ txSignature: escrowTx, updatedAt: new Date() })
+    .where(eq(payments.reference, reference));
+
+  // Confirm the booking — vault now holds the escrow
   await db.update(bookings).set({
     status: "confirmed",
-    escrowTxSignature: directTx,
-    escrowAmountUsdc: escrowAmount,
+    escrowTxSignature: escrowTx,
+    escrowAmountUsdc: escrowUsdc,
     ngnAmountPaid: booking.ngnAmountPaid ?? payment.amountNgn,
     paymentMethod: "paystack",
   }).where(eq(bookings.id, bookingId));
 
-  console.log(`[payment] Booking ${bookingId} confirmed (Path B). escrow tx=${directTx}`);
+  console.log(
+    `[payment] ✓ Booking ${bookingId.slice(0, 8)} confirmed. ` +
+    `Vault ${vaultAddress.slice(0, 8)}… holds ${escrowUsdc} USDC escrow. tx=${escrowTx}`
+  );
 }
 
 export default router;
