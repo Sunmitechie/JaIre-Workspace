@@ -428,4 +428,21 @@ router.get("/balance/:address", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /mpc/vault-address   [INTERNAL — server-to-server only]
+ *
+ * Returns the JaIre vault's public Solana address so the API server
+ * can target it for direct escrow payments without needing a separate env var.
+ */
+router.get("/vault-address", async (_req: Request, res: Response) => {
+  try {
+    const { getVaultKeypair } = await import("../services/solana-wallet.js");
+    const vault = getVaultKeypair();
+    res.json({ vault_address: vault.publicKey.toBase58() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
 export default router;
