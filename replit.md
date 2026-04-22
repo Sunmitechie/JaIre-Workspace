@@ -372,10 +372,39 @@ React + Vite app at `/` (port 24196 in dev). Dark fintech aesthetic — Solana G
 
 ---
 
+## Admin Dashboard (COMPLETE)
+
+Route: `/admin` — self-contained login gate (no auth provider needed), stores key in `localStorage`.
+
+**API endpoints** (`artifacts/api-server/src/routes/admin.ts`), all require `Authorization: Bearer <JAIRE_ADMIN_TOKEN>`:
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/admin/overview` | Platform totals + vault balance (live Solana RPC) |
+| `GET /api/admin/organizations` | All orgs + KYC status + pending count |
+| `GET /api/admin/bookings` | All bookings with org + workspace details |
+| `GET /api/admin/activity` | Recent activity events (limit 50) |
+| `PATCH /api/admin/kyc/:orgId` | Approve or reject org KYC (`{ action: "approve"|"reject" }`) |
+
+**Frontend** (`artifacts/jaire-app/src/pages/admin.tsx`): 4 tabs — Overview, Orgs, Bookings, Blink URL copier.
+
+## Solana Blinks / Actions (COMPLETE)
+
+Spec-compliant Solana Actions at `artifacts/api-server/src/routes/actions.ts`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/actions/actions.json` | Dialect manifest for blink crawlers |
+| `GET /api/actions/workspace/:id` | Blink metadata for a specific workspace |
+| `POST /api/actions/workspace/:id` | Returns serialized unsigned USDC-transfer tx |
+| `GET /api/actions/checkin` | Multi-workspace checkin blink (all active workspaces) |
+| `POST /api/actions/checkin` | Returns signed checkin tx for selected workspace |
+
+Share links via `https://dial.to/?action=solana-action:<JAIRE_PUBLIC_URL>/api/actions/workspace/<id>` for one-tap coworking bookings from Twitter/X or any Blinks-compatible wallet.
+
 ## Next Steps
 
+- [ ] Set `JAIRE_ADMIN_TOKEN` secret for production admin access
 - [ ] Roqqu direct integration (requires published website URL)
-- [ ] Solana Blinks for social media booking
 - [ ] IoT smart plug access control
 - [ ] Kamino mainnet integration (klend-sdk)
 - [ ] Web3Auth frontend SDK integration (tKey MPC Core Kit)

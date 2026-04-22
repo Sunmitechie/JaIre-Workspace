@@ -10,6 +10,8 @@ import paymentsRouter from "./payments";
 import orgRouter from "./org";
 import jaieRouter from "./jaie";
 import devicesRouter from "./devices";
+import adminRouter from "./admin";
+import actionsRouter from "./actions";
 
 const router: IRouter = Router();
 
@@ -24,5 +26,7 @@ router.use(paymentsRouter);
 router.use("/org", orgRouter);
 router.use("/jaie", jaieRouter);
 router.use("/devices", devicesRouter);
+router.use("/admin", adminRouter);
+router.use("/actions", actionsRouter);
 
 export default router;
