@@ -2,8 +2,9 @@ import { Router, Request, Response } from "express";
 import { createHmac, randomBytes, randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
-import { workspaces, bookings, activityEvents, users, organizations } from "@workspace/db";
+import { workspaces, bookings, activityEvents, users, organizations, devices } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
+import { publishCommand, isConnected as mqttConnected } from "../services/mqtt";
 
 const router = Router();
 
@@ -261,6 +262,27 @@ router.post("/checkin", async (req, res) => {
       escrow_tx_signature: booking.escrowTxSignature ?? null,
       message: "Welcome! Your session has started. USDC is in escrow.",
     });
+
+    // ── MQTT: power ON all devices in this workspace ─────────────────────────
+    if (ws.orgId) {
+      (async () => {
+        try {
+          const wsDevices = await db
+            .select()
+            .from(devices)
+            .where(and(eq(devices.orgId, ws!.orgId!), eq(devices.workspaceId, ws!.id)));
+          for (const d of wsDevices) {
+            const sent = publishCommand(ws!.orgId!, d.mqttClientId, { action: "on" });
+            console.log(`[MQTT] Check-in power ON → ${d.mqttClientId} (sent=${sent})`);
+          }
+          if (wsDevices.length === 0) {
+            console.log(`[MQTT] No devices in workspace ${ws!.id} to power on`);
+          }
+        } catch (e) {
+          console.warn("[MQTT] check-in power command error:", e);
+        }
+      })();
+    }
   } catch (err) {
     console.error("[QR check-in]", err);
     res.status(500).json({ error: "Check-in failed" });
@@ -329,7 +351,17 @@ router.post("/checkout", async (req, res) => {
     const escrowUsdc = booking.escrowAmountUsdc ?? (ws.hourlyRateUsdc * 8);
     const refundUsdc = parseFloat(Math.max(0, escrowUsdc - billedUsdc).toFixed(6));
 
-    const walletAddr = user_wallet_address ?? null;
+    // Resolve user wallet — prefer request body, fallback to DB lookup
+    let walletAddr = user_wallet_address ?? null;
+    if (!walletAddr && (user_email || user_id)) {
+      try {
+        const lookupEmail = user_email || user_id!;
+        const [userRow] = await db.select({ walletAddress: users.walletAddress })
+          .from(users).where(eq(users.email, lookupEmail)).limit(1);
+        walletAddr = userRow?.walletAddress ?? null;
+        if (walletAddr) console.log(`[checkout] Resolved wallet from DB for ${lookupEmail}: ${walletAddr.slice(0, 8)}...`);
+      } catch {}
+    }
 
     // ── Vault → User (refund excess) ─────────────────────────────────────────
     let settleTxSignature: string | null = null;
@@ -402,6 +434,10 @@ router.post("/checkout", async (req, res) => {
     const m = Math.floor((elapsedSeconds % 3600) / 60);
     const s = elapsedSeconds % 60;
 
+    // Log vault 15% retention explicitly
+    const vaultRetention = parseFloat((billedUsdc * 0.15).toFixed(6));
+    console.log(`[checkout] Vault retention: ${vaultRetention} USDC (15% of ${billedUsdc}) → JaIre vault 41sVtGn…`);
+
     res.json({
       booking_id: booking.id,
       workspace_name: ws.name,
@@ -415,6 +451,27 @@ router.post("/checkout", async (req, res) => {
       check_in_time: checkInTime.toISOString(),
       check_out_time: checkOutTime.toISOString(),
     });
+
+    // ── MQTT: power OFF all devices in this workspace ────────────────────────
+    if (ws.orgId) {
+      (async () => {
+        try {
+          const wsDevices = await db
+            .select()
+            .from(devices)
+            .where(and(eq(devices.orgId, ws.orgId!), eq(devices.workspaceId, ws.id)));
+          for (const d of wsDevices) {
+            const sent = publishCommand(ws.orgId!, d.mqttClientId, { action: "off" });
+            console.log(`[MQTT] Check-out power OFF → ${d.mqttClientId} (sent=${sent})`);
+          }
+          if (wsDevices.length === 0) {
+            console.log(`[MQTT] No devices in workspace ${ws.id} to power off`);
+          }
+        } catch (e) {
+          console.warn("[MQTT] check-out power command error:", e);
+        }
+      })();
+    }
   } catch (err) {
     console.error("[QR checkout]", err);
     res.status(500).json({ error: "Checkout failed" });
