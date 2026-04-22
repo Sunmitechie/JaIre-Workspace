@@ -3,18 +3,11 @@ import { useLocation } from "wouter";
 import { Html5Qrcode } from "html5-qrcode";
 import { getUser } from "@/lib/auth";
 import { formatNGN } from "@/lib/currency";
-import { QrCode, CheckCircle, XCircle, Camera, ChevronDown, ChevronUp } from "lucide-react";
+import { QrCode, CheckCircle, XCircle, Camera } from "lucide-react";
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 
 type ScanState = "idle" | "scanning" | "processing" | "success" | "error";
-
-interface DemoQR {
-  workspace_id: string;
-  workspace_name: string;
-  qr_data: string;
-  expires_in_ms: number;
-}
 
 export default function Scan() {
   const [, setLocation] = useLocation();
@@ -22,17 +15,24 @@ export default function Scan() {
   const [resultMsg, setResultMsg] = useState("");
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [hasActiveSession, setHasActiveSession] = useState<boolean | null>(null);
-  const [demoQRs, setDemoQRs] = useState<DemoQR[]>([]);
-  const [showDemo, setShowDemo] = useState(false);
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const didScan = useRef(false);
+  const didAutoScan = useRef(false);
 
+  // ── On mount: check active session, auto-process ?qr= param if present ──
   useEffect(() => {
-    checkActiveSession();
-    loadDemoQRs();
+    checkActiveSession().then(() => {
+      // After session check resolves, handle ?qr= if present
+      const params = new URLSearchParams(window.location.search);
+      const qrParam = params.get("qr");
+      if (qrParam && !didAutoScan.current) {
+        didAutoScan.current = true;
+        handleQRData(qrParam);
+      }
+    });
   }, []);
 
-  async function checkActiveSession() {
+  async function checkActiveSession(): Promise<void> {
     try {
       const res = await fetch(`${BASE_URL}/api/bookings?status=active`);
       if (res.ok) {
@@ -41,52 +41,53 @@ export default function Scan() {
         const uid = user?.id ?? "guest";
         const active = (data as any[]).find((b: any) => b.user_id === uid || b.status === "active");
         setHasActiveSession(!!active);
+      } else {
+        setHasActiveSession(false);
       }
     } catch {
       setHasActiveSession(false);
     }
   }
 
-  async function loadDemoQRs() {
-    const results: DemoQR[] = [];
+  // ── Camera: start AFTER the DOM element renders (useEffect on scanState) ──
+  useEffect(() => {
+    if (scanState !== "scanning") return;
+
+    // Tiny delay to ensure #qr-reader div is in the DOM
+    const t = setTimeout(() => {
+      const scanner = new Html5Qrcode("qr-reader");
+      scannerRef.current = scanner;
+
+      scanner
+        .start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 220, height: 220 } },
+          async (decoded) => {
+            if (didScan.current) return;
+            didScan.current = true;
+            await stopScanner();
+            // If the decoded value is a URL with ?qr= param, extract it
+            const qrData = extractQrParam(decoded);
+            await handleQRData(qrData);
+          },
+          () => {}
+        )
+        .catch(() => {
+          setScanState("error");
+          setResultMsg("Camera permission denied. Please allow camera access and try again.");
+        });
+    }, 100);
+
+    return () => clearTimeout(t);
+  }, [scanState]);
+
+  function extractQrParam(decoded: string): string {
     try {
-      const wsRes = await fetch(`${BASE_URL}/api/workspaces`);
-      if (wsRes.ok) {
-        const wsData = await wsRes.json() as Array<{ id: string }>;
-        for (const ws of wsData.slice(0, 5)) {
-          try {
-            const res = await fetch(`${BASE_URL}/api/qr/generate/${ws.id}`);
-            if (res.ok) results.push(await res.json() as DemoQR);
-          } catch {}
-        }
-      }
+      const url = new URL(decoded);
+      const qp = url.searchParams.get("qr");
+      if (qp) return qp;
     } catch {}
-    setDemoQRs(results);
-  }
-
-  function startScanner() {
-    setScanState("scanning");
-    didScan.current = false;
-
-    const scanner = new Html5Qrcode("qr-video-element");
-    scannerRef.current = scanner;
-
-    scanner
-      .start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 220, height: 220 } },
-        async (decoded) => {
-          if (didScan.current) return;
-          didScan.current = true;
-          await stopScanner();
-          await handleQRData(decoded);
-        },
-        () => {}
-      )
-      .catch(() => {
-        setScanState("error");
-        setResultMsg("Camera permission denied. Please allow camera access and try again.");
-      });
+    return decoded;
   }
 
   async function stopScanner() {
@@ -102,8 +103,22 @@ export default function Scan() {
     setScanState("processing");
     const user = getUser();
 
+    // Re-read active session fresh to make sure we use the right endpoint
+    let activeSession = hasActiveSession;
+    if (activeSession === null) {
+      try {
+        const res = await fetch(`${BASE_URL}/api/bookings?status=active`);
+        if (res.ok) {
+          const data = await res.json();
+          const uid = user?.id ?? "guest";
+          activeSession = (data as any[]).some((b: any) => b.user_id === uid || b.status === "active");
+          setHasActiveSession(activeSession);
+        }
+      } catch {}
+    }
+
     try {
-      const endpoint = hasActiveSession ? "/api/qr/checkout" : "/api/qr/checkin";
+      const endpoint = activeSession ? "/api/qr/checkout" : "/api/qr/checkin";
       const res = await fetch(`${BASE_URL}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -125,7 +140,7 @@ export default function Scan() {
       }
 
       setScanState("success");
-      if (hasActiveSession) {
+      if (activeSession) {
         const ngn = data.billed_ngn ?? 0;
         setResultMsg(
           `Checked out from ${data.workspace_name}.\n${data.duration_display} · ${formatNGN(ngn)} billed.`
@@ -139,11 +154,6 @@ export default function Scan() {
       setScanState("error");
       setResultMsg("Network error. Please check your connection and try again.");
     }
-  }
-
-  async function handleDemoScan(qrData: string) {
-    if (scanState === "processing") return;
-    await handleQRData(qrData);
   }
 
   useEffect(() => {
@@ -176,99 +186,55 @@ export default function Scan() {
         </p>
       </div>
 
-      {scanState === "idle" && (
+      {(scanState === "idle" || scanState === "scanning") && (
         <div className="space-y-4">
-          <button
-            onClick={startScanner}
-            className="w-full h-14 rounded-xl text-base font-semibold flex items-center justify-center gap-2.5 transition-all hover:scale-[1.01]"
-            style={
-              isCheckin
-                ? {
-                    background: "linear-gradient(135deg, hsl(43 100% 50%) 0%, hsl(38 100% 44%) 100%)",
-                    color: "hsl(220 40% 5%)",
-                  }
-                : {
-                    background: "rgba(239,68,68,0.15)",
-                    color: "#ef4444",
-                    border: "1px solid rgba(239,68,68,0.3)",
-                  }
-            }
-          >
-            <Camera className="w-5 h-5" />
-            Open Camera
-          </button>
-
-          <div
-            className="rounded-xl overflow-hidden"
-            style={{ border: "1px solid rgba(255,255,255,0.07)" }}
-          >
+          {scanState === "idle" && (
             <button
-              className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/3 transition-colors"
-              onClick={() => {
-                setShowDemo((v) => !v);
-                if (!showDemo) loadDemoQRs();
-              }}
+              onClick={() => { didScan.current = false; setScanState("scanning"); }}
+              className="w-full h-14 rounded-xl text-base font-semibold flex items-center justify-center gap-2.5 transition-all hover:scale-[1.01]"
+              style={
+                isCheckin
+                  ? {
+                      background: "linear-gradient(135deg, hsl(43 100% 50%) 0%, hsl(38 100% 44%) 100%)",
+                      color: "hsl(220 40% 5%)",
+                    }
+                  : {
+                      background: "rgba(239,68,68,0.15)",
+                      color: "#ef4444",
+                      border: "1px solid rgba(239,68,68,0.3)",
+                    }
+              }
             >
-              <span className="flex items-center gap-2">
-                <QrCode className="w-4 h-4" />
-                Test with demo workspace QR
-              </span>
-              {showDemo ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              <Camera className="w-5 h-5" />
+              Open Camera
             </button>
+          )}
 
-            {showDemo && (
-              <div className="px-4 pb-4 space-y-2">
-                <p className="text-xs text-muted-foreground mb-3">
-                  Tap a workspace below to simulate scanning its QR code.
-                </p>
-                {demoQRs.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">Loading workspaces…</p>
-                ) : (
-                  demoQRs.map((q) => (
-                    <button
-                      key={q.workspace_id}
-                      onClick={() => handleDemoScan(q.qr_data)}
-                      disabled={scanState === "processing"}
-                      className="w-full px-4 py-3 rounded-xl text-left text-sm flex items-center gap-3 transition-all hover:bg-white/5 disabled:opacity-50"
-                      style={{
-                        background: "rgba(255,170,0,0.05)",
-                        border: "1px solid rgba(255,170,0,0.15)",
-                      }}
-                    >
-                      <QrCode className="w-4 h-4 text-primary shrink-0" />
-                      <span className="font-medium">{q.workspace_name}</span>
-                      <span className="text-xs text-muted-foreground ml-auto">tap to scan</span>
-                    </button>
-                  ))
-                )}
+          {scanState === "scanning" && (
+            <>
+              <div
+                className="rounded-2xl overflow-hidden relative"
+                style={{ border: "1px solid rgba(255,170,0,0.3)" }}
+              >
+                {/* This div MUST exist in the DOM before Html5Qrcode.start() is called */}
+                <div id="qr-reader" className="w-full" />
+                <div
+                  className="absolute inset-0 pointer-events-none"
+                  style={{
+                    boxShadow: "inset 0 0 0 2px rgba(255,170,0,0.4)",
+                    borderRadius: "1rem",
+                  }}
+                />
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {scanState === "scanning" && (
-        <div className="space-y-4">
-          <div
-            className="rounded-2xl overflow-hidden relative"
-            style={{ border: "1px solid rgba(255,170,0,0.3)" }}
-          >
-            <div id="qr-video-element" className="w-full" />
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                boxShadow: "inset 0 0 0 2px rgba(255,170,0,0.4)",
-                borderRadius: "1rem",
-              }}
-            />
-          </div>
-          <button
-            onClick={async () => { await stopScanner(); setScanState("idle"); }}
-            className="w-full h-12 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
-          >
-            Cancel
-          </button>
+              <button
+                onClick={async () => { await stopScanner(); setScanState("idle"); }}
+                className="w-full h-12 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+              >
+                Cancel
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -329,7 +295,7 @@ export default function Scan() {
             <p className="text-sm text-muted-foreground">{resultMsg}</p>
           </div>
           <button
-            onClick={() => { setScanState("idle"); didScan.current = false; }}
+            onClick={() => { setScanState("idle"); didScan.current = false; didAutoScan.current = false; }}
             className="w-full h-12 rounded-xl text-sm font-semibold transition-all hover:scale-[1.01]"
             style={{
               background: "linear-gradient(135deg, hsl(43 100% 50%) 0%, hsl(38 100% 44%) 100%)",

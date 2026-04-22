@@ -126,38 +126,33 @@ export default function OrgDashboard() {
   const [editImagePreview, setEditImagePreview] = useState<string | null>(null);
   const [editImageUploading, setEditImageUploading] = useState(false);
 
-  // QR code state per workspace
-  const [qrMap, setQrMap] = useState<Record<string, { qr_data: string; expires_in_ms: number; countdown: number } | null>>({});
-  const [activeQrWs, setActiveQrWs] = useState<string | null>(null);
-  const qrIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Org-level QR code (one per org, rotating every 10s)
+  const [orgQr, setOrgQr] = useState<{ qr_data: string; expires_in_ms: number; countdown: number } | null>(null);
+  const orgQrIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchQr = useCallback(async (wsId: string) => {
+  const fetchOrgQr = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/qr/generate/${wsId}`);
+      const token = getOrgToken();
+      const res = await fetch(`${API}/qr/org`, { headers: { Authorization: `Bearer ${token}` } });
       if (res.ok) {
         const data = await res.json() as { qr_data: string; expires_in_ms: number };
-        setQrMap(prev => ({ ...prev, [wsId]: { ...data, countdown: Math.ceil(data.expires_in_ms / 1000) } }));
+        setOrgQr({ ...data, countdown: Math.ceil(data.expires_in_ms / 1000) });
       }
     } catch {}
   }, []);
 
   useEffect(() => {
-    if (!activeQrWs) {
-      if (qrIntervalRef.current) { clearInterval(qrIntervalRef.current); qrIntervalRef.current = null; }
-      return;
-    }
-    fetchQr(activeQrWs);
-    qrIntervalRef.current = setInterval(() => {
-      setQrMap(prev => {
-        const entry = prev[activeQrWs];
-        if (!entry) return prev;
-        const next = entry.countdown - 1;
-        if (next <= 0) { fetchQr(activeQrWs); return prev; }
-        return { ...prev, [activeQrWs]: { ...entry, countdown: next } };
+    fetchOrgQr();
+    orgQrIntervalRef.current = setInterval(() => {
+      setOrgQr(prev => {
+        if (!prev) return prev;
+        const next = prev.countdown - 1;
+        if (next <= 0) { fetchOrgQr(); return prev; }
+        return { ...prev, countdown: next };
       });
     }, 1000);
-    return () => { if (qrIntervalRef.current) clearInterval(qrIntervalRef.current); };
-  }, [activeQrWs, fetchQr]);
+    return () => { if (orgQrIntervalRef.current) clearInterval(orgQrIntervalRef.current); };
+  }, [fetchOrgQr]);
 
   // Jaie AI chat state
   const [jaieOpen, setJaieOpen] = useState(false);
@@ -688,6 +683,53 @@ export default function OrgDashboard() {
               ))}
             </div>
 
+            {/* ── Org QR Code ───────────────────────────────────────────────── */}
+            <div
+              className="rounded-2xl p-5 mb-6 flex flex-col sm:flex-row items-center gap-6"
+              style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)" }}
+            >
+              <div className="flex flex-col items-center gap-2 shrink-0">
+                <p className="text-xs text-purple-300 font-semibold tracking-wide uppercase">Entrance QR Code</p>
+                {orgQr ? (
+                  <>
+                    <div className="bg-white p-3 rounded-xl">
+                      <QRCodeSVG
+                        value={`${window.location.origin}/scan?qr=${orgQr.qr_data}`}
+                        size={160}
+                        level="M"
+                        includeMargin={false}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-2 h-2 rounded-full animate-pulse"
+                        style={{ background: orgQr.countdown <= 3 ? "#ef4444" : "#22c55e" }}
+                      />
+                      <p className="text-xs text-gray-400">
+                        {orgQr.countdown > 0 ? `Refreshes in ${orgQr.countdown}s` : "Refreshing…"}
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <div className="w-[160px] h-[160px] rounded-xl bg-white/5 flex items-center justify-center">
+                    <div className="w-6 h-6 border-2 border-purple-500/40 border-t-purple-500 rounded-full animate-spin" />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 text-center sm:text-left">
+                <p className="text-white font-semibold mb-1">One QR for your entire space</p>
+                <p className="text-gray-400 text-sm mb-3">
+                  Print or display this at your entrance. Members scan it to start or end their session.
+                  The code rotates every 10 seconds for security.
+                </p>
+                <ul className="text-xs text-gray-500 space-y-1">
+                  <li>✓ Works for check-in and check-out</li>
+                  <li>✓ Only activates bookings made at this space</li>
+                  <li>✓ Scanning opens the JaIre app on any phone</li>
+                </ul>
+              </div>
+            </div>
+
             {org.kycStatus === "pending" && (
               <div className="p-5 bg-purple-500/10 border border-purple-500/20 rounded-2xl mb-6 flex items-center justify-between">
                 <div>
@@ -786,68 +828,12 @@ export default function OrgDashboard() {
                     </div>
                     <div className="flex gap-2">
                       <button
-                        onClick={() => {
-                          if (activeQrWs === ws.id) { setActiveQrWs(null); }
-                          else { setActiveQrWs(ws.id); }
-                        }}
-                        className="flex-1 py-2 text-xs font-medium rounded-xl border transition-all flex items-center justify-center gap-1.5"
-                        style={activeQrWs === ws.id
-                          ? { background: "rgba(168,85,247,0.15)", color: "#a855f7", border: "1px solid rgba(168,85,247,0.35)" }
-                          : { background: "transparent", color: "#9ca3af", border: "1px solid rgba(255,255,255,0.1)" }
-                        }
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4H5a1 1 0 00-1 1v6a1 1 0 001 1h6a1 1 0 001-1V5a1 1 0 00-1-1zm0 0h7a1 1 0 011 1v6a1 1 0 01-1 1h-6a1 1 0 01-1-1V5a1 1 0 011-1zM3 16h4v4H3v-4zm8 0h4v4h-4v-4z" />
-                        </svg>
-                        {activeQrWs === ws.id ? "Hide QR" : "Show QR"}
-                      </button>
-                      <button
                         onClick={() => openEditModal(ws)}
                         className="flex-1 py-2 text-xs text-gray-400 hover:text-white border border-white/10 hover:border-white/20 rounded-xl transition-all"
                       >
                         Edit
                       </button>
                     </div>
-
-                    {activeQrWs === ws.id && (
-                      <div
-                        className="rounded-xl p-4 flex flex-col items-center gap-3"
-                        style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)" }}
-                      >
-                        <p className="text-xs text-purple-300 font-medium">Live QR Code · Refreshes every 10s</p>
-                        {qrMap[ws.id] ? (
-                          <>
-                            <div className="bg-white p-3 rounded-xl">
-                              <QRCodeSVG
-                                value={qrMap[ws.id]!.qr_data}
-                                size={160}
-                                level="M"
-                                includeMargin={false}
-                              />
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <div
-                                className="w-2 h-2 rounded-full animate-pulse"
-                                style={{ background: qrMap[ws.id]!.countdown <= 3 ? "#ef4444" : "#22c55e" }}
-                              />
-                              <p className="text-xs text-gray-400">
-                                {qrMap[ws.id]!.countdown > 0
-                                  ? `Refreshes in ${qrMap[ws.id]!.countdown}s`
-                                  : "Refreshing…"}
-                              </p>
-                            </div>
-                            <p className="text-xs text-gray-600 text-center">
-                              Display this at the workspace entrance. Users scan to check in / check out.
-                            </p>
-                          </>
-                        ) : (
-                          <div className="flex items-center gap-2 py-4 text-xs text-gray-500">
-                            <div className="w-4 h-4 border-2 border-purple-500/40 border-t-purple-500 rounded-full animate-spin" />
-                            Generating QR…
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>

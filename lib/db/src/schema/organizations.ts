@@ -35,6 +35,7 @@ export const organizations = pgTable("organizations", {
   logoUrl: text("logo_url"),
   phone: text("phone"),
 
+  qrSecret: text("qr_secret"),
   kycStatus: kycStatusEnum("kyc_status").notNull().default("pending"),
   kycSubmittedAt: timestamp("kyc_submitted_at"),
   kycVerifiedAt: timestamp("kyc_verified_at"),

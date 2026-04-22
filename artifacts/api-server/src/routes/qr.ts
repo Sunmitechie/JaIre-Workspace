@@ -1,5 +1,6 @@
-import { Router } from "express";
-import { createHmac, randomUUID } from "crypto";
+import { Router, Request, Response } from "express";
+import { createHmac, randomBytes, randomUUID } from "crypto";
+import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { workspaces, bookings, activityEvents, users, organizations } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
@@ -9,6 +10,9 @@ const router = Router();
 const SLOT_WINDOW_MS = 10_000;
 const NGN_PER_USDC = 1600;
 const MPC_SIDECAR = "http://localhost:9000";
+const JWT_SECRET = process.env["JWT_SECRET"] ?? "jaire-dev-secret";
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function currentSlot() {
   return Math.floor(Date.now() / SLOT_WINDOW_MS);
@@ -18,7 +22,7 @@ function slotHash(secret: string, slot: number): string {
   return createHmac("sha256", secret).update(slot.toString()).digest("hex").slice(0, 16);
 }
 
-function validateQRPayload(secret: string, incomingHash: string): boolean {
+function validateSlotHash(secret: string, incomingHash: string): boolean {
   const now = currentSlot();
   for (const slot of [now - 1, now, now + 1]) {
     if (slotHash(secret, slot) === incomingHash) return true;
@@ -26,12 +30,20 @@ function validateQRPayload(secret: string, incomingHash: string): boolean {
   return false;
 }
 
-function parseQRData(qrData: string): { workspace_id: string; slot_hash: string } | null {
+type ParsedQR =
+  | { type: "org"; org_id: string; slot_hash: string }
+  | { type: "workspace"; workspace_id: string; slot_hash: string }
+  | null;
+
+function parseQRData(qrData: string): ParsedQR {
   try {
     const decoded = Buffer.from(qrData, "base64url").toString("utf8");
     const parsed = JSON.parse(decoded);
+    if (typeof parsed.o === "string" && typeof parsed.h === "string") {
+      return { type: "org", org_id: parsed.o, slot_hash: parsed.h };
+    }
     if (typeof parsed.w === "string" && typeof parsed.h === "string") {
-      return { workspace_id: parsed.w, slot_hash: parsed.h };
+      return { type: "workspace", workspace_id: parsed.w, slot_hash: parsed.h };
     }
     return null;
   } catch {
@@ -39,9 +51,61 @@ function parseQRData(qrData: string): { workspace_id: string; slot_hash: string 
   }
 }
 
-// ── POST /qr/checkin ────────────────────────────────────────────────────────
-// Check-in ONLY starts the clock. Funds are already in escrow from the
-// payment webhook — no on-chain movement happens here.
+// Org auth middleware (same pattern as org.ts)
+function requireOrgAuth(req: Request, res: Response, next: () => void) {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader?.startsWith("Bearer ")) {
+    res.status(401).json({ error: "Missing auth token" });
+    return;
+  }
+  try {
+    const payload = jwt.verify(authHeader.slice(7), JWT_SECRET) as { email: string };
+    (req as any).orgEmail = payload.email;
+    next();
+  } catch {
+    res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+// ── GET /qr/org — generate rotating org-level QR ─────────────────────────────
+// Requires org auth. Returns a base64url payload; frontend encodes it into a URL.
+router.get("/org", requireOrgAuth, async (req: Request, res: Response) => {
+  try {
+    const email = (req as any).orgEmail as string;
+    let [org] = await db.select().from(organizations).where(eq(organizations.ownerEmail, email)).limit(1);
+    if (!org) return res.status(404).json({ error: "Org not found" });
+
+    // Auto-init qrSecret for this org on first request
+    if (!org.qrSecret) {
+      const secret = randomBytes(32).toString("hex");
+      const [updated] = await db
+        .update(organizations)
+        .set({ qrSecret: secret })
+        .where(eq(organizations.id, org.id))
+        .returning();
+      org = updated ?? org;
+      if (!org.qrSecret) return res.status(500).json({ error: "Failed to initialize QR secret" });
+    }
+
+    const slot = currentSlot();
+    const hash = slotHash(org.qrSecret, slot);
+    const qrPayload = Buffer.from(JSON.stringify({ o: org.id, h: hash })).toString("base64url");
+    const expiresInMs = SLOT_WINDOW_MS - (Date.now() % SLOT_WINDOW_MS);
+
+    res.json({
+      qr_data: qrPayload,
+      org_id: org.id,
+      org_name: org.businessName ?? org.ownerName ?? "Your Space",
+      expires_in_ms: expiresInMs,
+      slot,
+    });
+  } catch (err) {
+    console.error("[QR org generate]", err);
+    res.status(500).json({ error: "Failed to generate QR" });
+  }
+});
+
+// ── POST /qr/checkin ─────────────────────────────────────────────────────────
 router.post("/checkin", async (req, res) => {
   try {
     const { qr_data, user_id, user_name, user_email, user_wallet_address } = req.body as {
@@ -57,17 +121,9 @@ router.post("/checkin", async (req, res) => {
     const payload = parseQRData(qr_data);
     if (!payload) return res.status(400).json({ error: "Invalid QR code format" });
 
-    const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, payload.workspace_id));
-    if (!ws) return res.status(404).json({ error: "Workspace not found" });
-    if (!ws.qrSecret) return res.status(400).json({ error: "Workspace QR not configured" });
-
-    if (!validateQRPayload(ws.qrSecret, payload.slot_hash)) {
-      return res.status(401).json({ error: "QR code expired — please scan the current code" });
-    }
-
     const uid = user_id || user_email || "guest";
 
-    // Check if already actively checked in
+    // ── Already checked in? ──────────────────────────────────────────────────
     const existing = await db
       .select()
       .from(bookings)
@@ -77,26 +133,76 @@ router.post("/checkin", async (req, res) => {
       return res.status(409).json({
         error: "You are already checked in",
         booking_id: existing[0].id,
-        workspace_name: ws.name,
         check_in_time: existing[0].checkInTime?.toISOString(),
       });
     }
 
-    // Look for a confirmed (paid + escrowed) booking for this workspace.
-    // Promote it to "active" and record check-in time — no new booking needed.
+    // ── Resolve workspace and validate QR ────────────────────────────────────
+    type WsRow = typeof workspaces.$inferSelect;
+    let ws: WsRow | undefined;
+
+    if (payload.type === "org") {
+      // Org-level QR: validate against org's qrSecret
+      const [org] = await db.select().from(organizations).where(eq(organizations.id, payload.org_id)).limit(1);
+      if (!org) return res.status(404).json({ error: "Organisation not found" });
+      if (!org.qrSecret) return res.status(400).json({ error: "QR not configured for this org" });
+      if (!validateSlotHash(org.qrSecret, payload.slot_hash)) {
+        return res.status(401).json({ error: "QR code expired — please scan the current code" });
+      }
+
+      // Find user's confirmed booking for any workspace belonging to this org
+      const orgWorkspaces = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.orgId, org.id));
+      const wsIds = orgWorkspaces.map((w) => w.id);
+
+      if (wsIds.length === 0) return res.status(400).json({ error: "This org has no workspaces listed yet" });
+
+      const confirmedBookings = await db
+        .select()
+        .from(bookings)
+        .where(and(eq(bookings.userId, uid), eq(bookings.status, "confirmed")));
+
+      const confirmedForOrg = confirmedBookings.find((b) => wsIds.includes(b.workspaceId!));
+
+      if (confirmedForOrg) {
+        const [wsRow] = await db.select().from(workspaces).where(eq(workspaces.id, confirmedForOrg.workspaceId!));
+        ws = wsRow;
+      } else {
+        // Walk-in: use first available workspace in the org
+        const [available] = await db
+          .select()
+          .from(workspaces)
+          .where(and(eq(workspaces.orgId, org.id), eq(workspaces.isAvailable, true)))
+          .limit(1);
+
+        if (!available) return res.status(400).json({ error: "No confirmed booking found and no available workspace in this org" });
+        ws = available;
+      }
+
+    } else {
+      // Legacy workspace-level QR
+      const [wsRow] = await db.select().from(workspaces).where(eq(workspaces.id, payload.workspace_id));
+      if (!wsRow) return res.status(404).json({ error: "Workspace not found" });
+      if (!wsRow.qrSecret) return res.status(400).json({ error: "Workspace QR not configured" });
+      if (!validateSlotHash(wsRow.qrSecret, payload.slot_hash)) {
+        return res.status(401).json({ error: "QR code expired — please scan the current code" });
+      }
+      ws = wsRow;
+    }
+
+    if (!ws) return res.status(500).json({ error: "Could not resolve workspace" });
+
+    // ── Find or create booking ────────────────────────────────────────────────
     const confirmedBookings = await db
       .select()
       .from(bookings)
       .where(and(eq(bookings.userId, uid), eq(bookings.status, "confirmed")));
 
-    const confirmedForWs = confirmedBookings.find((b) => b.workspaceId === ws.id)
-      ?? confirmedBookings[0]; // accept any confirmed booking as a fallback
+    const confirmedForWs = confirmedBookings.find((b) => b.workspaceId === ws!.id) ?? confirmedBookings[0];
 
     let booking: typeof confirmedBookings[0];
     const checkInTime = new Date();
 
     if (confirmedForWs) {
-      // Transition the existing confirmed booking to active — timer starts now
       const [updated] = await db
         .update(bookings)
         .set({ status: "active", checkInTime })
@@ -105,7 +211,6 @@ router.post("/checkin", async (req, res) => {
       booking = updated;
       console.log(`[QR check-in] Promoted confirmed booking ${booking.id} → active`);
     } else {
-      // Walk-in: no pre-paid booking — create one and start it immediately
       const [created] = await db
         .insert(bookings)
         .values({
@@ -137,7 +242,6 @@ router.post("/checkin", async (req, res) => {
       amountNgn: null,
     });
 
-    // Upsert user record
     if (user_email && user_wallet_address) {
       await db
         .insert(users)
@@ -163,9 +267,7 @@ router.post("/checkin", async (req, res) => {
   }
 });
 
-// ── POST /qr/checkout ───────────────────────────────────────────────────────
-// Calculates exact billed USDC, returns excess from vault back to user.
-// Vault keeps the billed amount; refund goes on-chain via vault keypair.
+// ── POST /qr/checkout ────────────────────────────────────────────────────────
 router.post("/checkout", async (req, res) => {
   try {
     const { qr_data, user_id, user_email, booking_id, user_wallet_address } = req.body as {
@@ -181,11 +283,24 @@ router.post("/checkout", async (req, res) => {
     const payload = parseQRData(qr_data);
     if (!payload) return res.status(400).json({ error: "Invalid QR code format" });
 
-    const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, payload.workspace_id));
-    if (!ws || !ws.qrSecret) return res.status(404).json({ error: "Workspace not found" });
+    // ── Validate QR ──────────────────────────────────────────────────────────
+    let allowedWorkspaceIds: string[] | null = null;
 
-    if (!validateQRPayload(ws.qrSecret, payload.slot_hash)) {
-      return res.status(401).json({ error: "QR code expired — please scan the current code" });
+    if (payload.type === "org") {
+      const [org] = await db.select().from(organizations).where(eq(organizations.id, payload.org_id)).limit(1);
+      if (!org?.qrSecret) return res.status(404).json({ error: "Organisation QR not configured" });
+      if (!validateSlotHash(org.qrSecret, payload.slot_hash)) {
+        return res.status(401).json({ error: "QR code expired — please scan the current code" });
+      }
+      const orgWorkspaces = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.orgId, org.id));
+      allowedWorkspaceIds = orgWorkspaces.map((w) => w.id);
+    } else {
+      const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, payload.workspace_id));
+      if (!ws?.qrSecret) return res.status(404).json({ error: "Workspace not found" });
+      if (!validateSlotHash(ws.qrSecret, payload.slot_hash)) {
+        return res.status(401).json({ error: "QR code expired — please scan the current code" });
+      }
+      allowedWorkspaceIds = [ws.id];
     }
 
     const uid = user_id || user_email || "guest";
@@ -195,11 +310,14 @@ router.post("/checkout", async (req, res) => {
       .from(bookings)
       .where(and(eq(bookings.userId, uid), eq(bookings.status, "active")));
 
-    let booking = activeBookings.find((b) => b.workspaceId === payload.workspace_id);
+    let booking = activeBookings.find((b) => allowedWorkspaceIds!.includes(b.workspaceId!));
     if (!booking && booking_id) booking = activeBookings.find((b) => b.id === booking_id);
     if (!booking && activeBookings.length > 0) booking = activeBookings[0];
-
     if (!booking) return res.status(404).json({ error: "No active check-in found" });
+
+    // ── Fetch workspace for rate calculation ─────────────────────────────────
+    const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, booking.workspaceId!));
+    if (!ws) return res.status(500).json({ error: "Workspace record missing" });
 
     const checkInTime = booking.checkInTime ?? new Date();
     const checkOutTime = new Date();
@@ -211,48 +329,35 @@ router.post("/checkout", async (req, res) => {
     const escrowUsdc = booking.escrowAmountUsdc ?? (ws.hourlyRateUsdc * 8);
     const refundUsdc = parseFloat(Math.max(0, escrowUsdc - billedUsdc).toFixed(6));
 
-    // Look up user wallet address if not in request
-    const walletAddr = user_wallet_address ?? (() => {
-      // Don't block checkout if wallet not found — just skip refund
-      return null;
-    })();
+    const walletAddr = user_wallet_address ?? null;
 
-    // ── Vault → User (refund excess) ───────────────────────────────────────
+    // ── Vault → User (refund excess) ─────────────────────────────────────────
     let settleTxSignature: string | null = null;
     if (walletAddr && refundUsdc > 0.000001) {
-      console.log(`[checkout] Vault → User refund: ${refundUsdc} USDC`);
       try {
         const settleRes = await fetch(`${MPC_SIDECAR}/mpc/vault-settle`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ to_address: walletAddr, amount_usdc: refundUsdc }),
         });
-
         if (settleRes.ok) {
           const sd = (await settleRes.json()) as { tx_signature?: string | null };
           settleTxSignature = sd.tx_signature ?? null;
-          console.log(`[checkout] Settle tx: ${settleTxSignature}`);
-        } else {
-          console.warn(`[checkout] Vault settle failed:`, await settleRes.text());
         }
       } catch (err) {
         console.warn(`[checkout] Settle error:`, err);
       }
-    } else if (refundUsdc <= 0.000001) {
-      console.log(`[checkout] Billed = escrow — no refund needed`);
     }
 
-    // ── Vault → Org wallet (85% revenue share) ─────────────────────────────
-    // Fire-and-forget: look up the org that owns this workspace and pay them
+    // ── Vault → Org wallet (85% revenue share) ───────────────────────────────
     if (billedUsdc > 0.0001 && ws.orgId) {
       (async () => {
         try {
           const [org] = await db.select({ ownerWalletAddress: organizations.ownerWalletAddress })
             .from(organizations).where(eq(organizations.id, ws.orgId!)).limit(1);
-
           if (org?.ownerWalletAddress) {
             const orgShare = parseFloat((billedUsdc * 0.85).toFixed(6));
-            const memo = `JAIRE|SETTLE|${booking.id.slice(0, 8)}|${orgShare}USDC|85PCT`;
+            const memo = `JAIRE|SETTLE|${booking!.id.slice(0, 8)}|${orgShare}USDC|85PCT`;
             const payRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -260,12 +365,8 @@ router.post("/checkout", async (req, res) => {
             });
             if (payRes.ok) {
               const pd = (await payRes.json()) as { tx_signature?: string | null };
-              console.log(`[checkout] Org ${ws.orgId} paid ${orgShare} USDC (85%). tx=${pd.tx_signature}`);
-            } else {
-              console.warn(`[checkout] Org payment failed:`, await payRes.text());
+              console.log(`[checkout] Org paid ${orgShare} USDC (85%). tx=${pd.tx_signature}`);
             }
-          } else {
-            console.log(`[checkout] Workspace ${ws.id} has no org wallet — skipping 85% settlement`);
           }
         } catch (e) {
           console.warn(`[checkout] Org settlement error:`, e);
@@ -273,7 +374,6 @@ router.post("/checkout", async (req, res) => {
       })();
     }
 
-    // Update booking
     await db
       .update(bookings)
       .set({
@@ -321,16 +421,14 @@ router.post("/checkout", async (req, res) => {
   }
 });
 
-// ── GET /qr/generate/:workspaceId ──────────────────────────────────────────
+// ── GET /qr/generate/:workspaceId — legacy per-workspace QR (kept for compat) ─
 router.get("/generate/:workspaceId", async (req, res) => {
   try {
     const { workspaceId } = req.params;
     let [ws] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId));
     if (!ws) return res.status(404).json({ error: "Workspace not found" });
 
-    // Auto-initialize qrSecret if missing — happens on first QR request for a workspace
     if (!ws.qrSecret) {
-      const { randomBytes } = await import("crypto");
       const newSecret = randomBytes(32).toString("hex");
       const [updated] = await db
         .update(workspaces)
