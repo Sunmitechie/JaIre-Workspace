@@ -102,4 +102,11 @@ app.get("/api/config", (_req, res) => {
 
 app.use("/api", router);
 
+// Initialize MQTT connection for IoT device management
+import("./services/mqtt").then(({ initMqtt }) => {
+  initMqtt();
+}).catch((err) => {
+  console.error("[MQTT] Failed to initialize:", err.message);
+});
+
 export default app;
