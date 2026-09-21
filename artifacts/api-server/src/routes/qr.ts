@@ -11,7 +11,10 @@ const router = Router();
 const SLOT_WINDOW_MS = 10_000;
 const NGN_PER_USDC = 1600;
 const MPC_SIDECAR = "http://localhost:9000";
-const JWT_SECRET = process.env["JWT_SECRET"] ?? "jaire-dev-secret";
+const JWT_SECRET = process.env["JWT_SECRET"];
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET must be configured");
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

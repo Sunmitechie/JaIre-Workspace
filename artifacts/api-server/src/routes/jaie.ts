@@ -6,7 +6,10 @@ import jwt from "jsonwebtoken";
 import { runJaieAgent, runJaieAgentStream, type OrgContext, type JaieToolImplementations } from "../agents/jaie-agent.js";
 
 const router = Router();
-const JWT_SECRET = process.env["JWT_SECRET"] ?? "jaire-dev-secret";
+const JWT_SECRET = process.env["JWT_SECRET"];
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET must be configured");
+}
 
 function requireOrgAuth(req: any, res: any, next: () => void) {
   const authHeader = req.headers["authorization"];

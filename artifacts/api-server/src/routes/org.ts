@@ -20,7 +20,10 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 8 * 1024 * 1024 } });
 
 const router = Router();
-const JWT_SECRET = process.env["JWT_SECRET"] ?? "jaire-dev-secret";
+const JWT_SECRET = process.env["JWT_SECRET"];
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET must be configured");
+}
 
 // ── Auth middleware (reuses user JWT but checks org ownership) ──────────────
 function requireOrgAuth(req: Request, res: Response, next: () => void) {

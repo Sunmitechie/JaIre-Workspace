@@ -6,7 +6,10 @@ import { eq, and } from "drizzle-orm";
 
 const router = Router();
 
-const PAYSTACK_SECRET = (process.env["PAYSTACK_SECRET_KEY"] ?? process.env["PAYSTACK_TEST_API_KEY"])!;
+const PAYSTACK_SECRET = process.env["PAYSTACK_SECRET_KEY"] ?? process.env["PAYSTACK_TEST_API_KEY"];
+if (!PAYSTACK_SECRET) {
+  throw new Error("PAYSTACK_SECRET_KEY or PAYSTACK_TEST_API_KEY must be configured");
+}
 const PAYSTACK_BASE = "https://api.paystack.co";
 const MPC_SIDECAR = "http://localhost:9000";
 

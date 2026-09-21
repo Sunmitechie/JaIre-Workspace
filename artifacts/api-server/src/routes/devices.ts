@@ -11,7 +11,10 @@ import {
 } from "../services/mqtt";
 
 const router = Router();
-const JWT_SECRET = process.env["JWT_SECRET"] ?? "jaire-dev-secret";
+const JWT_SECRET = process.env["JWT_SECRET"];
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET must be configured");
+}
 
 function requireOrgAuth(req: Request, res: Response, next: () => void) {
   const authHeader = req.headers["authorization"];
