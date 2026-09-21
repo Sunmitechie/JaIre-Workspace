@@ -1,0 +1,177 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jaire-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jaire}
+      POSTGRES_USER: ${POSTGRES_USER:-jaire_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jaire_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jaire_user} -d ${POSTGRES_DB:-jaire}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jaire-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: jaire-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--protected-mode", "no"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jaire-network
+
+  solana-devnet:
+    image: ghcr.io/solana-labs/solana:stable
+    container_name: jaire-solana-devnet
+    restart: unless-stopped
+    profiles: ["blockchain"]
+    ports:
+      - "8899:8899"
+      - "8900:8900"
+    command: >
+      sh -c "solana-test-validator --reset --rpc-port 8899 --dynamic-port-range 8000-8020 --bind-address 0.0.0.0"
+    networks:
+      - jaire-network
+
+  jaire-python:
+    image: python:3.11-slim
+    container_name: jaire-python
+    working_dir: /workspace
+    command: >
+      sh -c "pip install --no-cache-dir uv && cd artifacts/jaire-python && uv sync && uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - .:/workspace
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://jaire_user:jaire_password@postgres:5432/jaire}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-http://solana-devnet:8899}
+      SOLANA_NETWORK: ${SOLANA_NETWORK:-devnet}
+      PYTHON_API_URL: ${PYTHON_API_URL:-http://0.0.0.0:8000}
+      PORT: 8000
+      TEST_MODE_ENABLED: ${TEST_MODE_ENABLED:-true}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-paystack}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      solana-devnet:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/jaire/health').read()\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks:
+      - jaire-network
+
+  mpc-sidecar:
+    image: node:24-alpine
+    container_name: jaire-mpc-sidecar
+    working_dir: /workspace
+    command: >
+      sh -c "corepack enable && pnpm install && pnpm --dir services/mpc-sidecar dev"
+    volumes:
+      - .:/workspace
+    environment:
+      NODE_ENV: production
+      PORT: 9000
+      MPC_SIDECAR_PORT: ${MPC_SIDECAR_PORT:-9000}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-http://solana-devnet:8899}
+      PYTHON_API_URL: ${PYTHON_API_URL:-http://jaire-python:8000}
+      WEB3AUTH_CLIENT_ID: ${WEB3AUTH_CLIENT_ID:-}
+      WEB3AUTH_NODE_FACTOR_KEY: ${WEB3AUTH_NODE_FACTOR_KEY:-}
+    ports:
+      - "9000:9000"
+    depends_on:
+      jaire-python:
+        condition: service_healthy
+      solana-devnet:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - jaire-network
+
+  api-server:
+    image: node:24-alpine
+    container_name: jaire-api-server
+    working_dir: /workspace
+    command: >
+      sh -c "corepack enable && pnpm install && pnpm --dir artifacts/api-server dev"
+    volumes:
+      - .:/workspace
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://jaire_user:jaire_password@postgres:5432/jaire}
+      PYTHON_API_URL: ${PYTHON_API_URL:-http://jaire-python:8000}
+      MPC_SIDECAR_PORT: ${MPC_SIDECAR_PORT:-9000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SESSION_SECRET: ${SESSION_SECRET:-replace_me_in_env}
+    ports:
+      - "8080:8080"
+    depends_on:
+      jaire-python:
+        condition: service_healthy
+      mpc-sidecar:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+    networks:
+      - jaire-network
+
+  jaire-app:
+    image: node:24-alpine
+    container_name: jaire-app
+    working_dir: /workspace
+    command: >
+      sh -c "corepack enable && pnpm install && pnpm --dir artifacts/jaire-app dev --host 0.0.0.0 --port 5173"
+    volumes:
+      - .:/workspace
+    environment:
+      NODE_ENV: production
+      PORT: 5173
+      BASE_PATH: ${BASE_PATH:-/}
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+    ports:
+      - "5173:5173"
+    depends_on:
+      api-server:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - jaire-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  jaire-network:
+    driver: bridge

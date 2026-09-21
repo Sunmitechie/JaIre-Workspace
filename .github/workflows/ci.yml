@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # ── Node.js: Typecheck, Lint, Build ────────────────────────────────────
+  node-build:
+    name: Node.js Build & Typecheck
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20', '24']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: latest
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck TypeScript
+        run: pnpm run typecheck
+
+      - name: Build all packages
+        run: pnpm run build
+
+  # ── Python: Lint, Type Check, Test ────────────────────────────────────
+  python-build:
+    name: Python Tests & Type Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+        with:
+          version: "latest"
+
+      - name: Cache uv dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('**/pyproject.toml', '**/uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Run pytest
+        run: uv run pytest artifacts/jaire-python/tests/ -q --tb=short
+
+  # ── Rust / Anchor: Build Smart Contract ────────────────────────────────
+  rust-build:
+    name: Rust / Anchor Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check Rust formatting
+        run: |
+          if [ -d "programs/jaire-escrow" ]; then
+            cd programs/jaire-escrow
+            cargo fmt --check
+          fi
+
+      - name: Run cargo clippy
+        run: |
+          if [ -d "programs/jaire-escrow" ]; then
+            cd programs/jaire-escrow
+            cargo clippy -- -D warnings
+          fi
+
+  # ── Security Audit ────────────────────────────────────────────────────
+  security-audit:
+    name: Security & Dependency Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run npm audit (pnpm)
+        run: |
+          npm install -g pnpm
+          pnpm install --frozen-lockfile
+          pnpm audit --audit-level=moderate || echo "⚠️ Non-critical audit issues found"
+
+      - name: Validate git history
+        run: |
+          if git log --all --grep="wip\|WIP\|todo\|TODO" --oneline | grep -q .; then
+            echo "⚠️ Found WIP/TODO commits in history (non-blocking)"
+          fi
+
+  # ── Linting & Formatting Check ────────────────────────────────────────
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Prettier formatting
+        run: pnpm exec prettier --check . || echo "⚠️ Format issues detected (non-blocking in CI)"
+        continue-on-error: true
+
+  # ── Summary ────────────────────────────────────────────────────────────
+  ci-summary:
+    name: CI Summary
+    needs: [node-build, python-build, rust-build, security-audit, lint]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Check CI Status
+        run: |
+          if [ "${{ needs.node-build.result }}" == "failure" ] || \
+             [ "${{ needs.python-build.result }}" == "failure" ] || \
+             [ "${{ needs.rust-build.result }}" == "failure" ]; then
+            echo "❌ CI failed"
+            exit 1
+          fi
+          echo "✅ CI passed"
