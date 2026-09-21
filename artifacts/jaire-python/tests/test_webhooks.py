@@ -15,14 +15,6 @@ from app.database import get_db
 from app.routers import webhooks
 
 
-class FakeResult:
-    def __init__(self, value):
-        self._value = value
-
-    def scalar_one_or_none(self):
-        return self._value
-
-
 @pytest.fixture
 def client_app():
     app = FastAPI()
@@ -198,7 +190,7 @@ def test_stripe_webhook_processes_valid_event(monkeypatch, client_app, fake_db):
 
 
 def test_create_stripe_payment_intent(monkeypatch, client_app):
-    app, client = client_app
+    _, client = client_app
     monkeypatch.setattr(webhooks, "get_usdc_rate", AsyncMock(return_value={"rate": 1500.0, "source": "mock"}))
 
     response_obj = SimpleNamespace(client_secret="secret_abc", id="pi_test_123")
@@ -217,7 +209,7 @@ def test_create_stripe_payment_intent(monkeypatch, client_app):
 
 
 def test_initialize_paystack_payment(monkeypatch, client_app):
-    app, client = client_app
+    _, client = client_app
     monkeypatch.setattr(webhooks, "get_usdc_rate", AsyncMock(return_value={"rate": 1600.0, "source": "mock"}))
     monkeypatch.setattr(webhooks.settings, "paystack_secret_key", "paystack-secret", raising=False)
 
@@ -258,6 +250,44 @@ def test_initialize_paystack_payment(monkeypatch, client_app):
     assert response.status_code == 200
     payload = response.json()
     assert payload["authorization_url"] == "https://example.com/checkout"
+    assert payload["reference"] == "ref_789"
+    assert payload["currency"] == "NGN"
+
+
+def test_test_payment_endpoint_returns_generated_wallet_and_signature(monkeypatch, client_app, fake_db):
+    app, client = client_app
+    monkeypatch.setattr(webhooks.settings, "test_mode_enabled", True, raising=False)
+
+    fake_payment = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        amount_fiat=Decimal("25.00"),
+        amount_ngn=Decimal("2500.00"),
+        fiat_currency="NGN",
+        tx_signature="SIM_SIG_123",
+        status="completed",
+        oracle_source="mock",
+    )
+
+    mock_process_payment = AsyncMock(return_value=fake_payment)
+    monkeypatch.setattr(webhooks.payment_service, "process_payment", mock_process_payment)
+
+    wallet_row = SimpleNamespace(pubkey="TestWalletPubkey1111111111111111111111111111111111")
+    fake_db.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: wallet_row))
+    app.dependency_overrides[get_db] = lambda: fake_db
+
+    response = client.post(
+        "/jaire/webhook/test",
+        json={"user_identifier": "test@example.com", "amount_ngn": 2500.0, "user_name": "Test User"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["wallet_address"] == wallet_row.pubkey
+    assert payload["tx_signature"] == "SIM_SIG_123"
+    mock_process_payment.assert_awaited_once()
+
     assert payload["reference"] == "ref_789"
     assert payload["estimated_usdc"] == 1.5625
 

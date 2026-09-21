@@ -1,33 +1,58 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import fetch from 'node-fetch';
 
 vi.mock('node-fetch', () => ({
   default: vi.fn(),
 }));
 
-// Simple payment helper that would exist in the api-server for this test
 import { createPaymentIntent } from '../src/payments';
 
-describe('payments', () => {
+describe('createPaymentIntent', () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it('creates stripe payment intent and returns client secret', async () => {
-    // Mock the external Stripe API (via node-fetch)
-    const fakeResponse = {
-      client_secret: 'sec_test_abc',
-      id: 'pi_123',
-    };
-    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      json: async () => fakeResponse,
+  it('posts the correct Stripe payload and returns the payment intent metadata', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
+      json: async () => ({ client_secret: 'sec_test_abc', id: 'pi_123' }),
+    } as any);
+
+    const result = await createPaymentIntent({
+      amount_fiat: 42.5,
+      currency: 'usd',
+      email: 'buyer@example.com',
     });
 
-    const result = await createPaymentIntent({ amount_fiat: 100.0, currency: 'usd', email: 'a@b.com' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.stripe.com/v1/payment_intents',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'Content-Type': 'application/x-www-form-urlencoded',
+        }),
+        body: expect.stringContaining('amount=4250'),
+      }),
+    );
 
-    expect(result.payment_intent_id).toBe('pi_123');
-    expect(result.client_secret).toBe('sec_test_abc');
+    expect(result).toEqual({
+      client_secret: 'sec_test_abc',
+      payment_intent_id: 'pi_123',
+    });
+  });
+
+  it('uses USD as the default currency and surfaces a Stripe failure clearly', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 402,
+      json: async () => ({ error: 'card_declined' }),
+    } as any);
+
+    await expect(
+      createPaymentIntent({ amount_fiat: 15.75 }),
+    ).rejects.toThrow('Stripe error: 402');
   });
 });
