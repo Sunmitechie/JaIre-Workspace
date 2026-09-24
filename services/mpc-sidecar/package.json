@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --setupFiles tests/setup.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
