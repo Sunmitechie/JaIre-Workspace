@@ -1,19 +1,21 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useLocation } from "wouter";
-import { QRCodeSVG } from "qrcode.react";
 import { getOrgUser, getOrgToken, clearOrgUser, saveOrgUser } from "@/lib/org-auth";
+import OrgOverviewTab from "./OrgOverviewTab";
+import OrgWorkspacesTab from "./OrgWorkspacesTab";
+import OrgDevicesTab from "./OrgDevicesTab";
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 const API = `${BASE_URL}/api`;
 
-interface Metric {
+export interface Metric {
   total_workspaces: number;
   total_bookings: number;
   active_now: number;
   revenue_usdc: number;
 }
 
-interface Booking {
+export interface Booking {
   id: string;
   workspaceId: string;
   status: string;
@@ -23,7 +25,7 @@ interface Booking {
   escrowTxSignature?: string;
 }
 
-interface Workspace {
+export interface Workspace {
   id: string;
   name: string;
   description: string;
@@ -36,18 +38,19 @@ interface Workspace {
   imageUrl?: string;
 }
 
+export interface OrgUser {
+  businessName?: string;
+  ownerEmail?: string;
+  kycStatus?: "pending" | "submitted" | "verified" | "rejected";
+  token?: string;
+  [key: string]: any;
+}
+
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-green-500/20 text-green-400 border-green-500/30",
   completed: "bg-gray-500/20 text-gray-400 border-gray-500/30",
   confirmed: "bg-blue-500/20 text-blue-400 border-blue-500/30",
   pending: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-};
-
-const KYC_BADGE: Record<string, { label: string; cls: string }> = {
-  pending:   { label: "KYC Pending",   cls: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" },
-  submitted: { label: "KYC Submitted", cls: "bg-blue-500/20 text-blue-400 border-blue-500/30" },
-  verified:  { label: "Verified",      cls: "bg-green-500/20 text-green-400 border-green-500/30" },
-  rejected:  { label: "KYC Rejected",  cls: "bg-red-500/20 text-red-400 border-red-500/30" },
 };
 
 interface Device {
@@ -665,181 +668,18 @@ export default function OrgDashboard() {
           <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm mb-6">{error}</div>
         )}
 
-        {/* OVERVIEW TAB */}
         {!loading && activeTab === "overview" && metrics && (
-          <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
-              {[
-                { label: "Workspaces", value: metrics.total_workspaces, icon: "🏢", sub: "listed" },
-                { label: "Total Bookings", value: metrics.total_bookings, icon: "📅", sub: "all time" },
-                { label: "Active Now", value: metrics.active_now, icon: "⚡", sub: "in session" },
-                { label: "Revenue", value: `$${metrics.revenue_usdc.toFixed(2)}`, icon: "💰", sub: "USDC earned" },
-              ].map(m => (
-                <div key={m.label} className="bg-[#111] border border-white/10 rounded-2xl p-5">
-                  <p className="text-2xl mb-1">{m.icon}</p>
-                  <p className="text-white text-2xl font-bold">{m.value}</p>
-                  <p className="text-gray-500 text-xs mt-0.5">{m.label}</p>
-                  <p className="text-gray-600 text-xs">{m.sub}</p>
-                </div>
-              ))}
-            </div>
-
-            {/* ── Org QR Code ───────────────────────────────────────────────── */}
-            <div
-              className="rounded-2xl p-5 mb-6 flex flex-col sm:flex-row items-center gap-6"
-              style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)" }}
-            >
-              <div className="flex flex-col items-center gap-2 shrink-0">
-                <p className="text-xs text-purple-300 font-semibold tracking-wide uppercase">Entrance QR Code</p>
-                {orgQr ? (
-                  <>
-                    <div className="bg-white p-3 rounded-xl">
-                      <QRCodeSVG
-                        value={`${window.location.origin}/scan?qr=${orgQr.qr_data}`}
-                        size={160}
-                        level="M"
-                        includeMargin={false}
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="w-2 h-2 rounded-full animate-pulse"
-                        style={{ background: orgQr.countdown <= 3 ? "#ef4444" : "#22c55e" }}
-                      />
-                      <p className="text-xs text-gray-400">
-                        {orgQr.countdown > 0 ? `Refreshes in ${orgQr.countdown}s` : "Refreshing…"}
-                      </p>
-                    </div>
-                  </>
-                ) : (
-                  <div className="w-[160px] h-[160px] rounded-xl bg-white/5 flex items-center justify-center">
-                    <div className="w-6 h-6 border-2 border-purple-500/40 border-t-purple-500 rounded-full animate-spin" />
-                  </div>
-                )}
-              </div>
-              <div className="flex-1 text-center sm:text-left">
-                <p className="text-white font-semibold mb-1">One QR for your entire space</p>
-                <p className="text-gray-400 text-sm mb-3">
-                  Print or display this at your entrance. Members scan it to start or end their session.
-                  The code rotates every 10 seconds for security.
-                </p>
-                <ul className="text-xs text-gray-500 space-y-1">
-                  <li>✓ Works for check-in and check-out</li>
-                  <li>✓ Only activates bookings made at this space</li>
-                  <li>✓ Scanning opens the JaIre app on any phone</li>
-                </ul>
-              </div>
-            </div>
-
-            {org.kycStatus === "pending" && (
-              <div className="p-5 bg-purple-500/10 border border-purple-500/20 rounded-2xl mb-6 flex items-center justify-between">
-                <div>
-                  <p className="text-purple-300 font-medium">Complete your KYC to go live</p>
-                  <p className="text-gray-500 text-sm mt-0.5">Verified orgs can list workspaces and receive on-chain settlements.</p>
-                </div>
-                <button onClick={() => setLocation("/org/kyc")} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-xl transition-all">
-                  Start KYC
-                </button>
-              </div>
-            )}
-
-            <div className="bg-[#111] border border-white/10 rounded-2xl p-6">
-              <h3 className="text-white font-semibold mb-4">Recent Activity</h3>
-              {recentBookings.length === 0 ? (
-                <p className="text-gray-600 text-sm text-center py-8">No bookings yet. Add workspaces to get started.</p>
-              ) : (
-                <div className="space-y-3">
-                  {recentBookings.slice(0, 8).map(b => (
-                    <div key={b.id} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
-                      <div className="flex items-center gap-3">
-                        <span className={`text-xs px-2 py-0.5 rounded-full border ${STATUS_COLORS[b.status] ?? STATUS_COLORS["pending"]}`}>
-                          {b.status}
-                        </span>
-                        <div>
-                          <p className="text-white text-sm">{b.workspaceId}</p>
-                          <p className="text-gray-600 text-xs">{new Date(b.startTime).toLocaleString()}</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        {b.billedUsdc != null && (
-                          <p className="text-white text-sm font-medium">${b.billedUsdc.toFixed(2)}</p>
-                        )}
-                        {b.escrowTxSignature && (
-                          <a href={`https://explorer.solana.com/tx/${b.escrowTxSignature}?cluster=devnet`} target="_blank" rel="noopener noreferrer" className="text-purple-400 text-xs hover:underline">
-                            On-chain ↗
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
+          <OrgOverviewTab org={org} metrics={metrics} recentBookings={recentBookings} orgQr={orgQr} setLocation={setLocation} />
         )}
 
-        {/* WORKSPACES TAB */}
         {!loading && activeTab === "workspaces" && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-white text-xl font-semibold">Your Workspaces</h2>
-              <button
-                onClick={() => setShowAddWs(true)}
-                disabled={org.kycStatus === "rejected"}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-xl transition-all disabled:opacity-40"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-                Add Workspace
-              </button>
-            </div>
-
-            {workspaces.length === 0 ? (
-              <div className="text-center py-16 bg-[#111] border border-white/10 rounded-2xl">
-                <p className="text-4xl mb-4">🏢</p>
-                <p className="text-white font-medium mb-1">No workspaces yet</p>
-                <p className="text-gray-500 text-sm mb-6">Add your first workspace to start accepting bookings.</p>
-                <button onClick={() => setShowAddWs(true)} className="px-4 py-2 bg-purple-600 text-white text-sm rounded-xl">
-                  Add Your First Workspace
-                </button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {workspaces.map(ws => (
-                  <div key={ws.id} className="bg-[#111] border border-white/10 rounded-2xl p-5 flex flex-col gap-3">
-                    {ws.imageUrl && (
-                      <img src={ws.imageUrl} alt={ws.name} className="w-full h-32 object-cover rounded-xl" />
-                    )}
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="text-white font-medium">{ws.name}</p>
-                        <p className="text-gray-500 text-xs mt-0.5 capitalize">{ws.workspaceType.replace("_", " ")} · {ws.capacity} seat{ws.capacity > 1 ? "s" : ""}</p>
-                      </div>
-                      <button
-                        onClick={() => toggleAvailability(ws)}
-                        className={`text-xs px-2.5 py-1 rounded-full border transition-all ${ws.isAvailable ? "bg-green-500/20 text-green-400 border-green-500/30" : "bg-gray-500/20 text-gray-500 border-gray-600/30"}`}
-                      >
-                        {ws.isAvailable ? "Available" : "Offline"}
-                      </button>
-                    </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-gray-400">₦{ws.hourlyRateNgn.toLocaleString()}/hr</span>
-                      <span className="text-gray-600 text-xs">${ws.hourlyRateUsdc.toFixed(2)} USDC</span>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => openEditModal(ws)}
-                        className="flex-1 py-2 text-xs text-gray-400 hover:text-white border border-white/10 hover:border-white/20 rounded-xl transition-all"
-                      >
-                        Edit
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <OrgWorkspacesTab
+            workspaces={workspaces}
+            orgKycStatus={org.kycStatus}
+            setShowAddWs={setShowAddWs}
+            openEditModal={openEditModal}
+            toggleAvailability={toggleAvailability}
+          />
         )}
 
         {/* BOOKINGS TAB */}
@@ -996,251 +836,23 @@ export default function OrgDashboard() {
             )}
           </div>
         )}
-        {/* ── Devices Tab ─────────────────────────────────────────────────── */}
         {!loading && activeTab === "devices" && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-white text-xl font-semibold">IoT Devices</h2>
-                <p className="text-gray-500 text-xs mt-0.5">Smart plugs and power monitors connected via MQTT</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border ${mqttConnected ? "bg-green-500/10 border-green-500/20 text-green-400" : "bg-yellow-500/10 border-yellow-500/20 text-yellow-400"}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${mqttConnected ? "bg-green-400 animate-pulse" : "bg-yellow-400"}`} />
-                  MQTT {mqttConnected ? "Connected" : "Connecting…"}
-                </div>
-                <button
-                  onClick={() => setShowAddDevice(true)}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-xl transition-all"
-                >
-                  + Add Device
-                </button>
-              </div>
-            </div>
-
-            {/* MQTT Broker Info */}
-            <div className="bg-[#111] border border-white/10 rounded-2xl p-4">
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-sm flex-shrink-0">📡</div>
-                <div>
-                  <p className="text-white text-sm font-medium">Connected to HiveMQ Public Broker</p>
-                  <p className="text-gray-500 text-xs mt-0.5">Topics: <code className="text-purple-400 bg-purple-500/10 px-1 rounded">jaire/devices/{"<orgId>"}/{"<deviceId>"}/telemetry</code> · Real hardware connects to the same broker using your org ID.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Device Cards */}
-            {devicesLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <div className="w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
-              </div>
-            ) : devices.length === 0 ? (
-              <div className="bg-[#111] border border-white/10 rounded-2xl p-10 text-center">
-                <div className="text-4xl mb-3">🔌</div>
-                <p className="text-white font-medium mb-1">No devices yet</p>
-                <p className="text-gray-500 text-sm">Add a smart plug or power monitor to start tracking energy usage per workspace.</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {devices.map(device => {
-                  const ws = workspaces.find(w => w.id === device.workspaceId);
-                  const isSim = simExpanded === device.mqttClientId;
-                  const sForm = simForm[device.mqttClientId] ?? { watts: "120", voltage: "220", amps: "0.55", power_state: true, temperature: "38" };
-                  return (
-                    <div key={device.id} className="bg-[#111] border border-white/10 rounded-2xl overflow-hidden">
-                      {/* Device Header */}
-                      <div className="p-5">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex items-start gap-3">
-                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl flex-shrink-0 transition-all ${device.powerState ? "bg-green-500/15 border border-green-500/20" : "bg-white/5 border border-white/10"}`}>
-                              🔌
-                            </div>
-                            <div>
-                              <p className="text-white font-medium">{device.deviceName}</p>
-                              <div className="flex items-center gap-2 mt-0.5">
-                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${device.isOnline ? "bg-green-500/10 border-green-500/20 text-green-400" : "bg-gray-500/10 border-gray-500/20 text-gray-500"}`}>
-                                  <span className={`w-1 h-1 rounded-full ${device.isOnline ? "bg-green-400 animate-pulse" : "bg-gray-500"}`} />
-                                  {device.isOnline ? "Online" : "Offline"}
-                                </span>
-                                {ws && <span className="text-gray-600 text-xs">{ws.name}</span>}
-                                <span className="text-gray-700 text-xs capitalize">{device.deviceType.replace("_", " ")}</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            {/* Power toggle */}
-                            <button
-                              onClick={() => sendPowerCommand(device, device.powerState ? "off" : "on")}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${device.powerState ? "bg-green-500/15 border-green-500/30 text-green-400 hover:bg-green-500/25" : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"}`}
-                            >
-                              {device.powerState ? "ON" : "OFF"}
-                            </button>
-                            <button
-                              onClick={() => deleteDevice(device.id)}
-                              className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Telemetry readings */}
-                        {device.isOnline && (
-                          <div className="grid grid-cols-4 gap-3 mt-4">
-                            {[
-                              { label: "Power", value: device.currentWatts != null ? `${device.currentWatts.toFixed(1)}W` : "—" },
-                              { label: "Voltage", value: device.voltage != null ? `${device.voltage.toFixed(0)}V` : "—" },
-                              { label: "Current", value: device.currentAmps != null ? `${device.currentAmps.toFixed(2)}A` : "—" },
-                              { label: "Temp", value: device.temperature != null ? `${device.temperature.toFixed(0)}°C` : "—" },
-                            ].map(m => (
-                              <div key={m.label} className="bg-[#0d0d0d] border border-white/5 rounded-xl p-3 text-center">
-                                <p className="text-gray-600 text-xs mb-1">{m.label}</p>
-                                <p className="text-white font-mono text-sm font-bold">{m.value}</p>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {device.lastSeen && (
-                          <p className="text-gray-700 text-xs mt-3">Last seen: {new Date(device.lastSeen).toLocaleTimeString()}</p>
-                        )}
-                      </div>
-
-                      {/* Simulator panel */}
-                      <div className="border-t border-white/5">
-                        <button
-                          onClick={() => setSimExpanded(isSim ? null : device.mqttClientId)}
-                          className="w-full flex items-center justify-between px-5 py-3 text-gray-500 hover:text-gray-300 hover:bg-white/3 transition-all text-xs"
-                        >
-                          <span className="flex items-center gap-2">
-                            <span className="text-yellow-500">⚗</span>
-                            Device Simulator — test without hardware
-                          </span>
-                          <span>{isSim ? "▲" : "▼"}</span>
-                        </button>
-
-                        {isSim && (
-                          <div className="px-5 pb-5 bg-[#0a0a0a] space-y-4">
-                            <p className="text-gray-600 text-xs pt-3">Publishes a fake MQTT telemetry message as if this device sent it. Updates the dashboard live.</p>
-                            <div className="grid grid-cols-2 gap-3">
-                              {[
-                                { key: "watts", label: "Watts", placeholder: "120" },
-                                { key: "voltage", label: "Voltage (V)", placeholder: "220" },
-                                { key: "amps", label: "Current (A)", placeholder: "0.55" },
-                                { key: "temperature", label: "Temp (°C)", placeholder: "38" },
-                              ].map(field => (
-                                <div key={field.key}>
-                                  <label className="text-gray-600 text-xs block mb-1">{field.label}</label>
-                                  <input
-                                    type="number"
-                                    placeholder={field.placeholder}
-                                    value={(sForm as any)[field.key]}
-                                    onChange={e => setSimForm(prev => ({ ...prev, [device.mqttClientId]: { ...sForm, [field.key]: e.target.value } }))}
-                                    className="w-full bg-[#111] border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-purple-500/50"
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <div
-                                  onClick={() => setSimForm(prev => ({ ...prev, [device.mqttClientId]: { ...sForm, power_state: !sForm.power_state } }))}
-                                  className={`w-9 h-5 rounded-full transition-all relative cursor-pointer ${sForm.power_state ? "bg-green-500" : "bg-white/20"}`}
-                                >
-                                  <div className={`w-3.5 h-3.5 rounded-full bg-white absolute top-0.5 transition-all ${sForm.power_state ? "left-[18px]" : "left-[3px]"}`} />
-                                </div>
-                                <span className="text-gray-400 text-xs">Power state: {sForm.power_state ? "ON" : "OFF"}</span>
-                              </label>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <div className="text-gray-600 text-xs font-mono bg-[#111] border border-white/5 rounded-lg px-3 py-2 flex-1 truncate">
-                                Topic: jaire/devices/org/{device.mqttClientId}/telemetry
-                              </div>
-                              <button
-                                onClick={() => simulateTelemetry(device)}
-                                disabled={simLoading === device.mqttClientId}
-                                className="px-4 py-2 bg-yellow-500/15 hover:bg-yellow-500/25 border border-yellow-500/30 text-yellow-400 text-sm font-medium rounded-xl transition-all disabled:opacity-50 whitespace-nowrap"
-                              >
-                                {simLoading === device.mqttClientId ? "Publishing…" : "Publish Telemetry"}
-                              </button>
-                            </div>
-                            {simResult[device.mqttClientId] && (
-                              <p className={`text-xs font-medium ${simResult[device.mqttClientId] === "Published!" ? "text-green-400" : "text-red-400"}`}>
-                                {simResult[device.mqttClientId] === "Published!" ? "✓" : "✗"} {simResult[device.mqttClientId]}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Add Device Modal */}
-            {showAddDevice && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-                <div className="bg-[#111] border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-                  <h3 className="text-white font-semibold mb-4">Register IoT Device</h3>
-                  <form onSubmit={addDevice} className="space-y-4">
-                    <div>
-                      <label className="text-gray-400 text-xs block mb-1">Device Name</label>
-                      <input
-                        required
-                        placeholder="e.g. Plug — Desk Row A"
-                        value={deviceForm.deviceName}
-                        onChange={e => setDeviceForm(p => ({ ...p, deviceName: e.target.value }))}
-                        className="w-full bg-[#0d0d0d] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-purple-500/50"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-gray-400 text-xs block mb-1">Device Type</label>
-                      <select
-                        value={deviceForm.deviceType}
-                        onChange={e => setDeviceForm(p => ({ ...p, deviceType: e.target.value }))}
-                        className="w-full bg-[#0d0d0d] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-purple-500/50"
-                      >
-                        <option value="smart_plug">Smart Plug</option>
-                        <option value="power_monitor">Power Monitor</option>
-                        <option value="smart_breaker">Smart Breaker</option>
-                        <option value="env_sensor">Environmental Sensor</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-gray-400 text-xs block mb-1">Workspace (optional)</label>
-                      <select
-                        value={deviceForm.workspaceId}
-                        onChange={e => setDeviceForm(p => ({ ...p, workspaceId: e.target.value }))}
-                        className="w-full bg-[#0d0d0d] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-purple-500/50"
-                      >
-                        <option value="">— Not assigned —</option>
-                        {workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-gray-400 text-xs block mb-1">MQTT Client ID</label>
-                      <input
-                        required
-                        placeholder="e.g. plug-ws001-a"
-                        value={deviceForm.mqttClientId}
-                        onChange={e => setDeviceForm(p => ({ ...p, mqttClientId: e.target.value }))}
-                        className="w-full bg-[#0d0d0d] border border-white/10 rounded-xl px-4 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-purple-500/50"
-                      />
-                      <p className="text-gray-600 text-xs mt-1">Used as the device identifier in MQTT topics. Must be unique per device.</p>
-                    </div>
-                    {deviceFormError && <p className="text-red-400 text-xs">{deviceFormError}</p>}
-                    <div className="flex gap-3 pt-2">
-                      <button type="button" onClick={() => { setShowAddDevice(false); setDeviceFormError(null); }} className="flex-1 py-2.5 border border-white/10 text-gray-400 rounded-xl text-sm hover:bg-white/5 transition-all">Cancel</button>
-                      <button type="submit" disabled={deviceFormLoading} className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-medium transition-all disabled:opacity-50">
-                        {deviceFormLoading ? "Registering…" : "Register Device"}
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
-          </div>
+          <OrgDevicesTab
+            devices={devices}
+            devicesLoading={devicesLoading}
+            workspaces={workspaces}
+            mqttConnected={mqttConnected}
+            simExpanded={simExpanded}
+            setSimExpanded={setSimExpanded}
+            simForm={simForm}
+            setSimForm={setSimForm}
+            simLoading={simLoading}
+            simResult={simResult}
+            setShowAddDevice={setShowAddDevice}
+            sendPowerCommand={sendPowerCommand}
+            deleteDevice={deleteDevice}
+            simulateTelemetry={simulateTelemetry}
+          />
         )}
       </div>
 
