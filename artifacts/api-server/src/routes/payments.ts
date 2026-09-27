@@ -3,6 +3,7 @@ import crypto, { randomUUID } from "crypto";
 import { db } from "@workspace/db";
 import { payments, users, bookings, activityEvents, workspaces } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
+import { JAIRE_RATE, ngnToUsdc, generateRef } from "../lib/payment-utils";
 
 const router = Router();
 
@@ -15,16 +16,7 @@ const MPC_SIDECAR = "http://localhost:9000";
 
 // JaIre earns the 0.5% spread between market and JaIre rate — hidden from user
 const MARKET_RATE = 1600;       // NGN / USDC shown to user
-const JAIRE_RATE = 1608;        // actual rate used (1600 × 1.005)
 const FX_SPREAD_PCT = 0.5;
-
-function ngnToUsdc(ngn: number): number {
-  return parseFloat((ngn / JAIRE_RATE).toFixed(6));
-}
-
-function generateRef(): string {
-  return `JI-${Date.now()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
-}
 
 // ── POST /api/payments/initiate ────────────────────────────────────────────
 router.post("/payments/initiate", async (req, res) => {
