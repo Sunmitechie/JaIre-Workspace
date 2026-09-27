@@ -113,6 +113,32 @@ The frontend proxies requests like this:
 - `/jaire/*` → `http://localhost:8000`
 - `/mpc/*` → `http://localhost:9000`
 
+## Running tests offline
+
+The repository includes deterministic mock adapters so the payment and MPC tests can run without real Paystack, Solana RPC, or Web3Auth credentials.
+
+### Mocked service flow
+
+- `artifacts/api-server/tests/mocks/paystack.ts` fakes Paystack initialize and verify responses and produces a deterministic `charge.success` payload.
+- `services/mpc-sidecar/tests/mocks/solana.ts` fakes Solana balance and token RPC responses used by wallet tests.
+- `docker-compose.test.yml` starts only Postgres plus the services under test, so the suite never depends on public network endpoints.
+
+### Run locally without external services
+
+```bash
+# root workspace
+pnpm install
+pnpm test:ci
+```
+
+Or with Docker Compose:
+
+```bash
+docker compose -f docker-compose.test.yml up --build
+```
+
+This gives a reproducible CI-like environment for payment, webhook, QR, and MPC route tests without live credentials.
+
 ## Useful commands
 
 ```bash
@@ -121,6 +147,9 @@ pnpm run typecheck
 
 # Build everything
 pnpm run build
+
+# Run CI-style test suite with mocked services
+pnpm test:ci
 
 # Python API startup
 cd artifacts/jaire-python

@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jaire-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jaire_test
+      POSTGRES_USER: jaire
+      POSTGRES_PASSWORD: jairepass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata-test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jaire -d jaire_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api-server:
+    image: node:20-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://jaire:jairepass@postgres:5432/jaire_test
+      PAYSTACK_SECRET_KEY: test-paystack-secret
+      PAYSTACK_TEST_API_KEY: test-paystack-secret
+      APP_URL: http://localhost:8080
+      PORT: 8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -lc "corepack enable && pnpm install --frozen-lockfile && pnpm --dir /workspace/artifacts/api-server test"
+    ports:
+      - "8080:8080"
+
+  mpc-sidecar:
+    image: node:20-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+    environment:
+      NODE_ENV: test
+      SOLANA_RPC_URL: http://mock-solana:8899
+      WEB3AUTH_CLIENT_ID: mock-client-id
+      WEB3AUTH_NODE_FACTOR_KEY: mock-factor-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -lc "corepack enable && pnpm install --frozen-lockfile && pnpm --dir /workspace/services/mpc-sidecar test"
+
+volumes:
+  pgdata-test:
