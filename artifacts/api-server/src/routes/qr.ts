@@ -1,58 +1,19 @@
 import { Router, Request, Response } from "express";
-import { createHmac, randomBytes, randomUUID } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { workspaces, bookings, activityEvents, users, organizations, devices } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { publishCommand, isConnected as mqttConnected } from "../services/mqtt";
+import { SLOT_WINDOW_MS, currentSlot, slotHash, validateSlotHash, parseQRData } from "../lib/qr-crypto";
 
 const router = Router();
 
-const SLOT_WINDOW_MS = 10_000;
 const NGN_PER_USDC = 1600;
 const MPC_SIDECAR = "http://localhost:9000";
 const JWT_SECRET = process.env["JWT_SECRET"];
 if (!JWT_SECRET) {
   throw new Error("JWT_SECRET must be configured");
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function currentSlot() {
-  return Math.floor(Date.now() / SLOT_WINDOW_MS);
-}
-
-function slotHash(secret: string, slot: number): string {
-  return createHmac("sha256", secret).update(slot.toString()).digest("hex").slice(0, 16);
-}
-
-function validateSlotHash(secret: string, incomingHash: string): boolean {
-  const now = currentSlot();
-  for (const slot of [now - 1, now, now + 1]) {
-    if (slotHash(secret, slot) === incomingHash) return true;
-  }
-  return false;
-}
-
-type ParsedQR =
-  | { type: "org"; org_id: string; slot_hash: string }
-  | { type: "workspace"; workspace_id: string; slot_hash: string }
-  | null;
-
-function parseQRData(qrData: string): ParsedQR {
-  try {
-    const decoded = Buffer.from(qrData, "base64url").toString("utf8");
-    const parsed = JSON.parse(decoded);
-    if (typeof parsed.o === "string" && typeof parsed.h === "string") {
-      return { type: "org", org_id: parsed.o, slot_hash: parsed.h };
-    }
-    if (typeof parsed.w === "string" && typeof parsed.h === "string") {
-      return { type: "workspace", workspace_id: parsed.w, slot_hash: parsed.h };
-    }
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 // Org auth middleware (same pattern as org.ts)
