@@ -69,6 +69,28 @@ Include:
 - Security fixes should include or update tests when applicable.
 - Any secret that is found in Git history must be removed and the history rewritten or sanitized according to the repository’s recovery plan.
 
+## Threat Model
+
+JaIre handles financial rails, wallet keys, user identity, and payment webhooks. The primary threats are:
+- secret exfiltration from `.env` files, shell history, CI logs, or crash traces,
+- webhook spoofing against Paystack or other external providers,
+- wallet-signing or treasury-key compromise,
+- unauthorized admin access via poorly protected routes,
+- dependency and supply-chain compromise from unreviewed packages.
+
+The project’s security controls assume that an attacker may have access to source code, public build artifacts, or intercepted network traffic, but not to a managed secret store or a protected environment variable layer. All high-risk secrets must therefore be provisioned at runtime and never live in repo files or generated build artifacts.
+
+## Secret Manager Guidance
+
+For production and staging environments, use a dedicated secret manager such as AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, Doppler, or HashiCorp Vault. The application should resolve values from the environment or an approved secret provider at startup, not from source-controlled files.
+
+Recommended rules:
+- Store `JWT_SECRET`, `PAYSTACK_SECRET_KEY`, `JAIRE_TREASURY_PRIVATE_KEY`, and `WEB3AUTH_NODE_FACTOR_KEY` in the platform secret manager.
+- Keep local development values in `.env.local` or a per-user `.env` that is gitignored and never committed.
+- Restrict access to secrets by environment, service, and deployment role.
+- Rotate secrets on a regular cadence and immediately after any suspected exposure.
+- Treat private keys as critical assets: they must be logged only as redacted metadata and never as raw values.
+
 ## Payment and Authentication Security
 
 The application handles financial and authentication flows, so the following controls are mandatory:

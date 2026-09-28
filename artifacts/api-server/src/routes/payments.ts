@@ -3,14 +3,13 @@ import crypto, { randomUUID } from "crypto";
 import { db } from "@workspace/db";
 import { payments, users, bookings, activityEvents, workspaces } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
+import { logger } from "../lib/logger";
+import { getRequiredSecretFromAny } from "../lib/secrets";
 import { JAIRE_RATE, ngnToUsdc, generateRef } from "../lib/payment-utils";
 
 const router = Router();
 
-const PAYSTACK_SECRET = process.env["PAYSTACK_SECRET_KEY"] ?? process.env["PAYSTACK_TEST_API_KEY"];
-if (!PAYSTACK_SECRET) {
-  throw new Error("PAYSTACK_SECRET_KEY or PAYSTACK_TEST_API_KEY must be configured");
-}
+const PAYSTACK_SECRET = getRequiredSecretFromAny("PAYSTACK_SECRET_KEY", "PAYSTACK_TEST_API_KEY");
 const PAYSTACK_BASE = "https://api.paystack.co";
 const MPC_SIDECAR = "http://localhost:9000";
 
@@ -151,7 +150,7 @@ router.post("/payments/webhook", async (req, res) => {
     .digest("hex");
 
   if (signature !== expected) {
-    console.warn("[webhook] Invalid Paystack signature — rejected");
+    logger.warn("[webhook] Invalid Paystack signature — rejected");
     return res.status(400).json({ error: "Invalid signature" });
   }
 
@@ -176,7 +175,7 @@ router.post("/payments/webhook", async (req, res) => {
       }
     }
   } catch (err) {
-    console.error("[webhook] Processing error:", err);
+    logger.error({ err }, "[webhook] Processing error");
   }
 });
 
@@ -216,7 +215,7 @@ router.get("/payments/status/:reference", async (req, res) => {
           if (freshPayment && !freshPayment.txSignature) {
             // Fire-and-forget the on-chain transfer; don't block the response
             processSuccessfulPayment(freshPayment).catch((e) =>
-              console.error("[status] processSuccessfulPayment error:", e)
+              logger.error({ err: e }, "[status] processSuccessfulPayment error")
             );
           }
           return res.json({ ...freshPayment, status: "success" });
@@ -224,7 +223,7 @@ router.get("/payments/status/:reference", async (req, res) => {
       }
     } catch (verifyErr) {
       // Paystack verify failed — just return what we have in DB
-      console.warn("[status] Paystack verify failed:", verifyErr);
+      logger.warn({ err: verifyErr }, "[status] Paystack verify failed");
     }
 
     res.json(payment);
@@ -267,12 +266,12 @@ router.post("/payments/recover-pending", async (req, res) => {
 
         if (updated[0] && !updated[0].txSignature) {
           processSuccessfulPayment(updated[0]).catch((e) =>
-            console.error("[recover] processSuccessfulPayment error:", e)
+            logger.error({ err: e }, "[recover] processSuccessfulPayment error")
           );
           recovered++;
         }
       } catch (e) {
-        console.warn(`[recover] Failed to verify ${payment.reference}:`, e);
+        logger.warn({ err: e, reference: payment.reference }, "[recover] Failed to verify payment");
       }
     }
 
@@ -286,13 +285,13 @@ router.post("/payments/recover-pending", async (req, res) => {
 
     for (const payment of noTxPayments) {
       try {
-        console.log(`[recover] Retrying failed on-chain transfer for ${payment.reference}`);
+        logger.info({ reference: payment.reference }, "[recover] Retrying failed on-chain transfer");
         processSuccessfulPayment(payment).catch((e) =>
-          console.error("[recover-pass2] processSuccessfulPayment error:", e)
+          logger.error({ err: e, reference: payment.reference }, "[recover-pass2] processSuccessfulPayment error")
         );
         recovered++;
       } catch (e) {
-        console.warn(`[recover] Retry failed for ${payment.reference}:`, e);
+        logger.warn({ err: e, reference: payment.reference }, "[recover] Retry failed for payment");
       }
     }
 
@@ -376,7 +375,7 @@ router.post("/payments/book-with-balance", async (req, res) => {
 
     // Path A: wallet has enough USDC → escrow directly
     if (walletBalanceUsdc >= escrowUsdc && verifierId) {
-      console.log(`[book-with-balance] Wallet has ${walletBalanceUsdc} USDC — enough for ${escrowUsdc} USDC escrow`);
+      logger.info({ walletBalanceUsdc, escrowUsdc }, "[book-with-balance] Wallet has sufficient USDC for escrow");
 
       const escrowRes = await fetch(`${MPC_SIDECAR}/mpc/internal/escrow`, {
         method: "POST",
@@ -390,7 +389,7 @@ router.post("/payments/book-with-balance", async (req, res) => {
 
       if (!escrowRes.ok) {
         const errText = await escrowRes.text();
-        console.error(`[book-with-balance] Escrow failed: ${errText}`);
+        logger.error({ errText }, "[book-with-balance] Escrow failed");
         // Fall through to Paystack if escrow fails
       } else {
         const escrowData = (await escrowRes.json()) as { tx_signature?: string };
@@ -416,7 +415,7 @@ router.post("/payments/book-with-balance", async (req, res) => {
           amountNgn: amountNgn,
         });
 
-        console.log(`[book-with-balance] Booking ${bookingId} confirmed (wallet), escrow tx: ${escrowTx}`);
+        logger.info({ bookingId, escrowTx }, "[book-with-balance] Booking confirmed using wallet funds");
 
         return res.json({
           method: "wallet",
@@ -501,7 +500,7 @@ router.post("/payments/book-with-balance", async (req, res) => {
       shortfall_ngn: shortfallNgn,
     });
   } catch (err: any) {
-    console.error("[book-with-balance] error:", err);
+    logger.error({ err }, "[book-with-balance] error");
     res.status(500).json({ error: err.message ?? "Booking failed" });
   }
 });
@@ -524,7 +523,7 @@ async function getVaultAddress(): Promise<string | null> {
       }
     }
   } catch (err) {
-    console.error("[payment] Could not fetch vault address from sidecar:", err);
+    logger.error({ err }, "[payment] Could not fetch vault address from sidecar");
   }
   return null;
 }
@@ -553,10 +552,10 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   // User paid NGN to top up their USDC wallet. Send USDC directly to their wallet.
   if (!bookingId) {
     if (!userWalletAddress) {
-      console.log(`[payment] Top-up with no wallet for ${reference} — nothing to do`);
+      logger.info({ reference }, "[payment] Top-up with no wallet — nothing to do");
       return;
     }
-    console.log(`[payment] Top-up: Treasury mints ${amountUsdc} USDC → user wallet ${userWalletAddress.slice(0, 8)}`);
+    logger.info({ amountUsdc, walletAddress: userWalletAddress.slice(0, 8) }, "[payment] Top-up: Treasury mints USDC to user wallet");
     const fundRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -570,9 +569,9 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     if (fundRes.ok) {
       const fd = (await fundRes.json()) as { tx_signature?: string | null };
       await db.update(payments).set({ txSignature: fd.tx_signature ?? null, updatedAt: new Date() }).where(eq(payments.reference, reference));
-      console.log(`[payment] Top-up confirmed. tx=${fd.tx_signature}`);
+      logger.info({ txSignature: fd.tx_signature }, "[payment] Top-up confirmed");
     } else {
-      console.error(`[payment] Top-up failed:`, await fundRes.text());
+      logger.error({ response: await fundRes.text() }, "[payment] Top-up failed");
     }
     return;
   }
@@ -583,20 +582,22 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   // This keeps the exchange and escrow as two distinct on-chain steps.
   const [booking] = await db.select().from(bookings).where(eq(bookings.id, bookingId));
   if (!booking) {
-    console.warn(`[payment] Booking ${bookingId} not found`);
+    logger.warn({ bookingId }, "[payment] Booking not found");
     return;
   }
   const escrowUsdc = booking.escrowAmountUsdc ?? amountUsdc;
 
   if (!userWalletAddress) {
-    console.error(`[payment] No wallet address for booking ${bookingId} — cannot mint USDC`);
+    logger.error({ bookingId }, "[payment] No wallet address for booking — cannot mint USDC");
     return;
   }
 
-  console.log(
-    `[payment] Exchange: Treasury mints ${escrowUsdc} USDC → user wallet ` +
-    `${userWalletAddress.slice(0, 8)}… (booking ${bookingId.slice(0, 8)}, ref ${reference})`
-  );
+  logger.info({
+    escrowUsdc,
+    walletPrefix: userWalletAddress.slice(0, 8),
+    bookingPrefix: bookingId.slice(0, 8),
+    reference,
+  }, "[payment] Exchange: Treasury mints USDC to user wallet");
 
   const exchangeRes = await fetch(`${MPC_SIDECAR}/mpc/fund-by-address`, {
     method: "POST",
@@ -610,7 +611,7 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
   });
 
   if (!exchangeRes.ok) {
-    console.error(`[payment] Exchange→user wallet FAILED for booking ${bookingId}:`, await exchangeRes.text());
+    logger.error({ bookingId, response: await exchangeRes.text() }, "[payment] Exchange→user wallet FAILED");
     return;
   }
 
@@ -628,10 +629,12 @@ async function processSuccessfulPayment(payment: typeof payments.$inferSelect) {
     paymentMethod: "paystack",
   }).where(eq(bookings.id, bookingId));
 
-  console.log(
-    `[payment] ✓ Booking ${bookingId.slice(0, 8)} confirmed. ` +
-    `${escrowUsdc} USDC in user wallet ${userWalletAddress.slice(0, 8)}… ready for PDA escrow at check-in. tx=${topupTx}`
-  );
+  logger.info({
+    bookingPrefix: bookingId.slice(0, 8),
+    escrowUsdc,
+    walletPrefix: userWalletAddress.slice(0, 8),
+    txSignature: topupTx,
+  }, "[payment] Booking confirmed with user-wallet USDC for escrow");
 }
 
 export default router;

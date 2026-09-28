@@ -1,10 +1,9 @@
 import app from "./app.js";
 import { config } from "./config.js";
+import { logger } from "./lib/logger.js";
 
 const PORT = config.port;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[MPC Sidecar] listening on port ${PORT}`);
-  console.log(`[MPC Sidecar] Web3Auth network: ${config.web3auth.network}`);
-  console.log(`[MPC Sidecar] Solana RPC: ${config.solana.rpcUrl}`);
+  logger.info({ port: PORT, network: config.web3auth.network, rpcUrl: config.solana.rpcUrl }, "[MPC Sidecar] listening");
 });

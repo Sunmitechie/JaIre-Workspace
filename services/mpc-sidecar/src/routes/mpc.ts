@@ -6,6 +6,7 @@ import {
   isRegisteredUser,
   deriveUserDevnetKeypair,
 } from "../services/mpc-service.js";
+import { logger } from "../lib/logger.js";
 import {
   getWalletBalance,
   fundUserWallet,
@@ -60,7 +61,7 @@ router.post("/factor-share", async (req: Request, res: Response) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/factor-share] error:", message);
+    logger.error({ err }, "[mpc/factor-share] error");
     res.status(401).json({ error: `Authentication failed: ${message}` });
   }
 });
@@ -166,7 +167,7 @@ router.post("/wallet-balance", async (req: Request, res: Response) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/wallet-balance] error:", message);
+    logger.error({ err }, "[mpc/wallet-balance] error");
     res.status(400).json({ error: message });
   }
 });
@@ -212,11 +213,12 @@ router.post("/fund-wallet", async (req: Request, res: Response) => {
       is_simulated ?? false,
     );
 
-    console.log(
-      `[mpc/fund-wallet] ${result.is_simulated ? "SIMULATED" : "LIVE"} ` +
-      `${amount_usdc} USDC → ${walletAddress.slice(0, 8)}... ` +
-      `tx=${result.tx_signature}`,
-    );
+    logger.info({
+      isSimulated: result.is_simulated,
+      amountUsdc: amount_usdc,
+      walletPrefix: walletAddress.slice(0, 8),
+      txSignature: result.tx_signature,
+    }, "[mpc/fund-wallet] Wallet funding complete");
 
     res.json({
       ...result,
@@ -225,7 +227,7 @@ router.post("/fund-wallet", async (req: Request, res: Response) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/fund-wallet] error:", message);
+    logger.error({ err }, "[mpc/fund-wallet] error");
     res.status(400).json({ error: message });
   }
 });
@@ -274,11 +276,13 @@ router.post("/sign-usdc-transfer", async (req: Request, res: Response) => {
       is_simulated ?? false,
     );
 
-    console.log(
-      `[mpc/sign-usdc-transfer] ${result.is_simulated ? "SIMULATED" : "LIVE"} ` +
-      `${amount_usdc} USDC ${result.from_address.slice(0, 8)}→${to_address.slice(0, 8)} ` +
-      `tx=${result.tx_signature}`,
-    );
+    logger.info({
+      isSimulated: result.is_simulated,
+      amountUsdc: amount_usdc,
+      fromPrefix: result.from_address.slice(0, 8),
+      toPrefix: to_address.slice(0, 8),
+      txSignature: result.tx_signature,
+    }, "[mpc/sign-usdc-transfer] USDC transfer signed");
 
     res.json({
       ...result,
@@ -287,7 +291,7 @@ router.post("/sign-usdc-transfer", async (req: Request, res: Response) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/sign-usdc-transfer] error:", message);
+    logger.error({ err }, "[mpc/sign-usdc-transfer] error");
     res.status(400).json({ error: message });
   }
 });
@@ -317,15 +321,16 @@ router.post("/internal/escrow", async (req: Request, res: Response) => {
 
     const result = await signUserUSDCTransfer(verifier_id, vaultAddress, amount_usdc, mint, false, memo);
 
-    console.log(
-      `[mpc/internal/escrow] ${result.is_simulated ? "SIM" : "LIVE"} ` +
-      `${amount_usdc} USDC → vault tx=${result.tx_signature}`,
-    );
+    logger.info({
+      isSimulated: result.is_simulated,
+      amountUsdc: amount_usdc,
+      txSignature: result.tx_signature,
+    }, "[mpc/internal/escrow] Escrow transfer complete");
 
     res.json({ ...result, vault_address: vaultAddress });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/internal/escrow] error:", message);
+    logger.error({ err }, "[mpc/internal/escrow] error");
     res.status(400).json({ error: message });
   }
 });
@@ -374,7 +379,7 @@ router.post("/escrow/initialize", async (req: Request, res: Response) => {
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/escrow/initialize] error:", message);
+    logger.error({ err }, "[mpc/escrow/initialize] error");
     res.status(500).json({ error: message });
   }
 });
@@ -430,7 +435,7 @@ router.post("/escrow/settle", async (req: Request, res: Response) => {
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/escrow/settle] error:", message);
+    logger.error({ err }, "[mpc/escrow/settle] error");
     res.status(500).json({ error: message });
   }
 });
@@ -462,15 +467,17 @@ router.post("/vault-settle", async (req: Request, res: Response) => {
 
     const result = await vaultToUserTransfer(to_address, amount_usdc, mint, memo);
 
-    console.log(
-      `[mpc/vault-settle] ${result.is_simulated ? "SIM" : "LIVE"} ` +
-      `${amount_usdc} USDC → ${to_address.slice(0, 8)}... tx=${result.tx_signature}`,
-    );
+    logger.info({
+      isSimulated: result.is_simulated,
+      amountUsdc: amount_usdc,
+      toPrefix: to_address.slice(0, 8),
+      txSignature: result.tx_signature,
+    }, "[mpc/vault-settle] Vault refund complete");
 
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/vault-settle] error:", message);
+    logger.error({ err }, "[mpc/vault-settle] error");
     res.status(400).json({ error: message });
   }
 });
@@ -500,20 +507,26 @@ router.post("/fund-by-address", async (req: Request, res: Response) => {
     const result = await fundUserWallet(wallet_address, usdc_amount, mint, false, effectiveMemo);
 
     if (result.tx_signature) {
-      console.log(
-        `[mpc/fund-by-address] ${result.is_simulated ? "SIM" : "LIVE"} ` +
-        `${usdc_amount} USDC → ${wallet_address.slice(0, 8)}... ref=${reference ?? "none"} tx=${result.tx_signature}`,
-      );
+      logger.info({
+        isSimulated: result.is_simulated,
+        amountUsdc: usdc_amount,
+        walletPrefix: wallet_address.slice(0, 8),
+        reference: reference ?? "none",
+        txSignature: result.tx_signature,
+      }, "[mpc/fund-by-address] Direct funding complete");
     } else {
-      console.error(
-        `[mpc/fund-by-address] FAILED ${usdc_amount} USDC → ${wallet_address.slice(0, 8)}... ref=${reference ?? "none"} error=${result.error}`,
-      );
+      logger.error({
+        amountUsdc: usdc_amount,
+        walletPrefix: wallet_address.slice(0, 8),
+        reference: reference ?? "none",
+        error: result.error,
+      }, "[mpc/fund-by-address] Direct funding failed");
     }
 
     res.json({ ...result, wallet_address, reference });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("[mpc/fund-by-address] error:", message);
+    logger.error({ err }, "[mpc/fund-by-address] error");
     res.status(400).json({ error: message });
   }
 });

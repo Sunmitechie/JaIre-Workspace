@@ -1,34 +1,41 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { randomBytes, randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { workspaces, bookings, activityEvents, users, organizations, devices } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { publishCommand, isConnected as mqttConnected } from "../services/mqtt";
+import { logger } from "../lib/logger";
+import { getRequiredSecret } from "../lib/secrets";
 import { SLOT_WINDOW_MS, currentSlot, slotHash, validateSlotHash, parseQRData } from "../lib/qr-crypto";
 
 const router = Router();
 
 const NGN_PER_USDC = 1600;
 const MPC_SIDECAR = "http://localhost:9000";
-const JWT_SECRET = process.env["JWT_SECRET"];
-if (!JWT_SECRET) {
-  throw new Error("JWT_SECRET must be configured");
-}
+const JWT_SECRET = getRequiredSecret("JWT_SECRET");
 
 // Org auth middleware (same pattern as org.ts)
-function requireOrgAuth(req: Request, res: Response, next: () => void) {
+function requireOrgAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers["authorization"];
   if (!authHeader?.startsWith("Bearer ")) {
     res.status(401).json({ error: "Missing auth token" });
     return;
   }
+
   try {
-    const payload = jwt.verify(authHeader.slice(7), JWT_SECRET) as { email: string };
+    const payload = jwt.verify(authHeader.slice(7), JWT_SECRET) as { email?: string };
+    if (!payload.email) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+
     (req as any).orgEmail = payload.email;
     next();
+    return;
   } catch {
     res.status(401).json({ error: "Invalid token" });
+    return;
   }
 }
 
@@ -65,7 +72,7 @@ router.get("/org", requireOrgAuth, async (req: Request, res: Response) => {
       slot,
     });
   } catch (err) {
-    console.error("[QR org generate]", err);
+    logger.error({ err }, "[QR org generate]");
     res.status(500).json({ error: "Failed to generate QR" });
   }
 });
@@ -175,7 +182,7 @@ router.post("/checkin", async (req, res) => {
         .where(eq(bookings.id, confirmedForWs.id))
         .returning();
       booking = updated;
-      console.log(`[QR check-in] Promoted confirmed booking ${booking.id} → active`);
+      logger.info({ bookingId: booking.id }, "[QR check-in] Promoted confirmed booking to active");
     } else {
       const [created] = await db
         .insert(bookings)
@@ -194,7 +201,7 @@ router.post("/checkin", async (req, res) => {
         })
         .returning();
       booking = created;
-      console.log(`[QR check-in] Walk-in booking ${booking.id} created`);
+      logger.info({ bookingId: booking.id }, "[QR check-in] Walk-in booking created");
     }
 
     await db.insert(activityEvents).values({
@@ -252,20 +259,22 @@ router.post("/checkin", async (req, res) => {
               await db.update(bookings)
                 .set({ escrowTxSignature: ed.tx_signature })
                 .where(eq(bookings.id, booking.id));
-              console.log(`[checkin/escrow] ✓ Locked booking=${booking.id.slice(0, 8)} tx=${ed.tx_signature}`);
+              logger.info({ bookingId: booking.id, txSignature: ed.tx_signature }, "[checkin/escrow] Locked booking escrow");
             }
           } else {
             const errBody = await escrowRes.text();
-            console.warn(`[checkin/escrow] Lock failed booking=${booking.id.slice(0, 8)}: ${errBody}`);
+            logger.warn({ bookingId: booking.id, errBody }, "[checkin/escrow] Lock failed");
           }
         } catch (e) {
-          console.warn("[checkin/escrow] Lock error:", e);
+          logger.warn({ err: e }, "[checkin/escrow] Lock error");
         }
       })();
     } else {
-      console.log(
-        `[checkin/escrow] Skipping on-chain lock (verifier_id=${!!verifier_id} wallet=${!!user_wallet_address} escrow=${booking.escrowAmountUsdc})`,
-      );
+      logger.info({
+        verifierIdPresent: !!verifier_id,
+        walletPresent: !!user_wallet_address,
+        escrowAmount: booking.escrowAmountUsdc,
+      }, "[checkin/escrow] Skipping on-chain lock");
     }
 
     // ── MQTT: power ON all devices in this workspace ─────────────────────────
@@ -278,18 +287,18 @@ router.post("/checkin", async (req, res) => {
             .where(and(eq(devices.orgId, ws!.orgId!), eq(devices.workspaceId, ws!.id)));
           for (const d of wsDevices) {
             const sent = publishCommand(ws!.orgId!, d.mqttClientId, { action: "on" });
-            console.log(`[MQTT] Check-in power ON → ${d.mqttClientId} (sent=${sent})`);
+            logger.info({ clientId: d.mqttClientId, sent }, "[MQTT] Check-in power ON");
           }
           if (wsDevices.length === 0) {
-            console.log(`[MQTT] No devices in workspace ${ws!.id} to power on`);
+            logger.info({ workspaceId: ws!.id }, "[MQTT] No devices in workspace to power on");
           }
         } catch (e) {
-          console.warn("[MQTT] check-in power command error:", e);
+          logger.warn({ err: e }, "[MQTT] check-in power command error");
         }
       })();
     }
   } catch (err) {
-    console.error("[QR check-in]", err);
+    logger.error({ err }, "[QR check-in]");
     res.status(500).json({ error: "Check-in failed" });
   }
 });
@@ -364,7 +373,7 @@ router.post("/checkout", async (req, res) => {
         const [userRow] = await db.select({ walletAddress: users.walletAddress })
           .from(users).where(eq(users.email, lookupEmail)).limit(1);
         walletAddr = userRow?.walletAddress ?? null;
-        if (walletAddr) console.log(`[checkout] Resolved wallet from DB for ${lookupEmail}: ${walletAddr.slice(0, 8)}...`);
+        if (walletAddr) logger.info({ lookupEmail, walletPrefix: walletAddr.slice(0, 8) }, "[checkout] Resolved wallet from DB");
       } catch {}
     }
 
@@ -382,7 +391,7 @@ router.post("/checkout", async (req, res) => {
           .from(organizations).where(eq(organizations.id, ws.orgId)).limit(1);
         orgWalletAddress = org?.ownerWalletAddress ?? null;
       } catch (e) {
-        console.warn("[checkout] Org wallet lookup error:", e);
+        logger.warn({ err: e }, "[checkout] Org wallet lookup error");
       }
     }
 
@@ -412,16 +421,18 @@ router.post("/checkout", async (req, res) => {
           settleHostUsdc       = sd.host_amount_usdc ?? 0;
           settleTreasuryUsdc   = sd.treasury_amount_usdc ?? 0;
           settleRefundUsdc     = sd.refund_usdc ?? refundUsdc;
-          console.log(
-            `[checkout] ✓ Atomic settle tx=${settleTxSignature} ` +
-            `org=${settleHostUsdc} treasury=${settleTreasuryUsdc} refund=${settleRefundUsdc}`,
-          );
+          logger.info({
+            txSignature: settleTxSignature,
+            orgUsdc: settleHostUsdc,
+            treasuryUsdc: settleTreasuryUsdc,
+            refundUsdc: settleRefundUsdc,
+          }, "[checkout] Atomic settle succeeded");
         } else {
           const errBody = await settleRes.text();
-          console.warn(`[checkout] Escrow settle failed: ${errBody}`);
+          logger.warn({ errBody }, "[checkout] Escrow settle failed");
         }
       } catch (err) {
-        console.warn("[checkout] Escrow settle error:", err);
+        logger.warn({ err }, "[checkout] Escrow settle error");
       }
     } else {
       // Fallback: no org wallet or no wallet addr — just refund user from vault
@@ -440,12 +451,12 @@ router.post("/checkout", async (req, res) => {
           console.warn("[checkout] Fallback vault-settle error:", err);
         }
       }
-      console.warn(`[checkout] Org wallet missing for ${ws.orgId ?? "unknown"} — 85% kept in vault`);
+      logger.warn({ orgId: ws.orgId ?? "unknown" }, "[checkout] Org wallet missing — 85% kept in vault");
     }
 
     // Log vault 15% retention
     const vaultRetention = parseFloat((billedUsdc * 0.15).toFixed(6));
-    console.log(`[checkout] Vault retention: ${vaultRetention} USDC (15% of ${billedUsdc}) → JaIre vault 41sVtGn…`);
+    logger.info({ vaultRetention, billedUsdc }, "[checkout] Vault retention applied");
 
     await db
       .update(bookings)
@@ -499,18 +510,18 @@ router.post("/checkout", async (req, res) => {
             .where(and(eq(devices.orgId, ws.orgId!), eq(devices.workspaceId, ws.id)));
           for (const d of wsDevices) {
             const sent = publishCommand(ws.orgId!, d.mqttClientId, { action: "off" });
-            console.log(`[MQTT] Check-out power OFF → ${d.mqttClientId} (sent=${sent})`);
+            logger.info({ clientId: d.mqttClientId, sent }, "[MQTT] Check-out power OFF");
           }
           if (wsDevices.length === 0) {
-            console.log(`[MQTT] No devices in workspace ${ws.id} to power off`);
+            logger.info({ workspaceId: ws.id }, "[MQTT] No devices in workspace to power off");
           }
         } catch (e) {
-          console.warn("[MQTT] check-out power command error:", e);
+          logger.warn({ err: e }, "[MQTT] check-out power command error");
         }
       })();
     }
   } catch (err) {
-    console.error("[QR checkout]", err);
+    logger.error({ err }, "[QR checkout]");
     res.status(500).json({ error: "Checkout failed" });
   }
 });
