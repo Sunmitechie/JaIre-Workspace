@@ -120,8 +120,9 @@ The repository includes deterministic mock adapters so the payment and MPC tests
 ### Mocked service flow
 
 - `artifacts/api-server/tests/mocks/paystack.ts` fakes Paystack initialize and verify responses and produces a deterministic `charge.success` payload.
-- `services/mpc-sidecar/tests/mocks/solana.ts` fakes Solana balance and token RPC responses used by wallet tests.
-- `docker-compose.test.yml` starts only Postgres plus the services under test, so the suite never depends on public network endpoints.
+- `services/mpc-sidecar/tests/mocks/solana.ts` fakes Solana balance, token-balance, and RPC responses used by wallet tests.
+- The API server and MPC sidecar test setup files install these adapters through Vitest's global `fetch` boundary. Web3Auth route behavior is isolated with deterministic service doubles, so no live JWT or account is required.
+- `docker-compose.test.yml` starts only Postgres, the API server test runner, and the MPC sidecar test runner. It does not start or contact Paystack, Solana, Web3Auth, or a public RPC endpoint.
 
 ### Run locally without external services
 
@@ -131,13 +132,15 @@ pnpm install
 pnpm test:ci
 ```
 
-Or with Docker Compose:
+The root `test:ci` script runs every workspace package's `test` script. The package-local test setup stubs the external HTTP boundaries before the tests run, so `pnpm test:ci` can be executed with only the already-installed workspace dependencies.
+
+Or run the same test commands through Docker Compose:
 
 ```bash
 docker compose -f docker-compose.test.yml up --build
 ```
 
-This gives a reproducible CI-like environment for payment, webhook, QR, and MPC route tests without live credentials.
+The compose file mounts the workspace and runs the package test scripts. It does not perform `pnpm install`; dependencies must be installed in the workspace first. This gives a reproducible CI-like environment for payment, webhook, QR, and MPC route tests without live credentials.
 
 ## Useful commands
 
