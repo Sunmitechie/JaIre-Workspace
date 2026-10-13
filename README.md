@@ -30,6 +30,8 @@ JaIre is a Web2.5 coworking platform monorepo that combines a React frontend, a 
 - uv
 - PostgreSQL running locally or in your cloud provider
 - A Solana devnet RPC endpoint
+- Docker Engine with Docker Compose v2
+- Bash and curl for the startup and smoke scripts
 
 ## 1) Clone the repo
 
@@ -56,15 +58,37 @@ pip install uv
 
 ## 3) Configure environment variables
 
-The project reads values from the root `.env` file. Fill in the placeholders before starting the app.
+Manual local development reads values from the root `.env` file. Fill in the placeholders before starting the full app. The automated smoke stack uses test-only values and does not require a root `.env` file.
 
 ```bash
 # Edit .env at the repo root
 ```
 
-The root `.env` file is already set up with placeholder values for local development. Replace the sample values with your real local credentials and secrets only on your machine.
+The root `.env` file is already set up with placeholder values for local development. Replace the sample values with your real local credentials and secrets only on your machine; do not commit those values.
 
-## 4) Start the services
+## 4) Start the smoke stack
+
+For a one-command startup check that needs no `.env` credentials, run:
+
+```bash
+bash scripts/dev-up.sh
+```
+
+This enables Corepack, installs the workspace dependencies, syncs the Python environment, and starts Postgres, FastAPI, and the Express gateway with test-only credentials. The stack does not connect to Paystack, Solana, Web3Auth, or the public MQTT broker. In a second terminal, verify the services with:
+
+```bash
+bash scripts/smoke.sh
+```
+
+The Python docs, Python health endpoint, and Express gateway root are checked. Stop the stack with `Ctrl+C`.
+
+To run the containerized Vitest suites instead, start the test profile:
+
+```bash
+docker compose -f docker-compose.test.yml --profile tests up --build
+```
+
+## 5) Start the full app manually
 
 Open separate terminals for each service.
 
@@ -140,7 +164,13 @@ Or run the same test commands through Docker Compose:
 docker compose -f docker-compose.test.yml up --build
 ```
 
-The compose file mounts the workspace and runs the package test scripts. It does not perform `pnpm install`; dependencies must be installed in the workspace first. This gives a reproducible CI-like environment for payment, webhook, QR, and MPC route tests without live credentials.
+The default Compose services are the Python API and Express smoke stack. To run the package test runners as well, enable the `tests` profile:
+
+```bash
+docker compose -f docker-compose.test.yml --profile tests up --build
+```
+
+This runs the API and MPC Vitest suites without live provider credentials.
 
 ## Useful commands
 
