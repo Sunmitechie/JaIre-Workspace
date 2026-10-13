@@ -39,6 +39,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "1.6.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

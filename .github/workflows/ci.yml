@@ -51,6 +51,11 @@ jobs:
       - name: Build all packages
         run: pnpm run build
 
+      - name: Enforce TypeScript coverage
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run --coverage
+          pnpm --dir services/mpc-sidecar exec vitest run --coverage
+
   # ── Python: Lint, Type Check, Test ────────────────────────────────────
   python-build:
     name: Python Tests & Type Check
@@ -84,8 +89,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync
 
-      - name: Run pytest
-        run: uv run pytest artifacts/jaire-python/tests/ -q --tb=short
+      - name: Enforce Python coverage
+        run: uv run pytest artifacts/jaire-python/tests/ -q --tb=short --cov=app --cov-report=term-missing --cov-fail-under=50
 
   # ── Rust / Anchor: Build Smart Contract ────────────────────────────────
   rust-build:
