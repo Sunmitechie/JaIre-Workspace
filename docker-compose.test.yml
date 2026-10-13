@@ -19,11 +19,39 @@ services:
       timeout: 5s
       retries: 10
 
+  python-api:
+    image: python:3.11-slim
+    working_dir: /workspace
+    volumes: [".:/workspace:cached"]
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgresql+asyncpg://jaire:jairepass@postgres:5432/jaire_test
+      SOLANA_RPC_URL: http://mock-solana:8899
+      TEST_MODE_ENABLED: "true"
+      UV_PROJECT_ENVIRONMENT: /tmp/jaire-python-venv
+    command: >
+      sh -lc "pip install --no-cache-dir uv &&
+      uv sync --project /workspace --no-install-project &&
+      cd /workspace/artifacts/jaire-python &&
+      uv run --project /workspace --no-sync uvicorn main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/jaire/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
   api-server:
-    image: node:20-alpine
+    image: node:24-alpine
     working_dir: /workspace
     volumes:
       - .:/workspace:cached
+      - api-node-modules:/workspace/node_modules
     environment:
       NODE_ENV: test
       DATABASE_URL: postgresql://jaire:jairepass@postgres:5432/jaire_test
@@ -34,26 +62,54 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      python-api:
+        condition: service_healthy
     command: >
-      sh -lc "corepack enable && pnpm --dir /workspace/artifacts/api-server test"
+      sh -lc "corepack enable && pnpm install --frozen-lockfile --node-linker=hoisted && pnpm --dir /workspace/artifacts/api-server build && pnpm --dir /workspace/artifacts/api-server start"
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
-  mpc-sidecar:
-    image: node:20-alpine
+  api-tests:
+    image: node:24-alpine
     working_dir: /workspace
     volumes:
       - .:/workspace:cached
+      - api-test-node-modules:/workspace/node_modules
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://jaire:jairepass@postgres:5432/jaire_test
+      PAYSTACK_SECRET_KEY: test-paystack-secret
+      PAYSTACK_TEST_API_KEY: test-paystack-secret
+    profiles: ["tests"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -lc "corepack enable && pnpm install --frozen-lockfile --node-linker=hoisted && pnpm --dir /workspace/artifacts/api-server test"
+
+  mpc-sidecar:
+    image: node:24-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+      - mpc-test-node-modules:/workspace/node_modules
     environment:
       NODE_ENV: test
       SOLANA_RPC_URL: http://mock-solana:8899
       WEB3AUTH_CLIENT_ID: mock-client-id
       WEB3AUTH_NODE_FACTOR_KEY: mock-factor-key
-    depends_on:
-      postgres:
-        condition: service_healthy
+    profiles: ["tests"]
     command: >
-      sh -lc "corepack enable && pnpm --dir /workspace/services/mpc-sidecar test"
+      sh -lc "corepack enable && pnpm install --frozen-lockfile --node-linker=hoisted && pnpm --dir /workspace/services/mpc-sidecar test"
 
 volumes:
   pgdata-test:
+  api-node-modules:
+  api-test-node-modules:
+  mpc-test-node-modules:
