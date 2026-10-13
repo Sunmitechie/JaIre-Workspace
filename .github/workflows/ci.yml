@@ -92,6 +92,24 @@ jobs:
       - name: Enforce Python coverage
         run: uv run pytest artifacts/jaire-python/tests/ -q --tb=short --cov=app --cov-report=term-missing --cov-fail-under=50
 
+  smoke-test:
+    name: Docker startup smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start test services
+        run: docker compose -f docker-compose.test.yml up --build -d
+
+      - name: Check service endpoints
+        run: bash scripts/smoke.sh
+
+      - name: Stop test services
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
   # ── Rust / Anchor: Build Smart Contract ────────────────────────────────
   rust-build:
     name: Rust / Anchor Build
@@ -178,7 +196,7 @@ jobs:
   # ── Summary ────────────────────────────────────────────────────────────
   ci-summary:
     name: CI Summary
-    needs: [node-build, python-build, rust-build, security-audit, lint]
+    needs: [node-build, python-build, rust-build, security-audit, lint, smoke-test]
     runs-on: ubuntu-latest
     if: always()
 
@@ -187,6 +205,7 @@ jobs:
         run: |
           if [ "${{ needs.node-build.result }}" == "failure" ] || \
              [ "${{ needs.python-build.result }}" == "failure" ] || \
+             [ "${{ needs.smoke-test.result }}" == "failure" ] || \
              [ "${{ needs.rust-build.result }}" == "failure" ]; then
             echo "❌ CI failed"
             exit 1
