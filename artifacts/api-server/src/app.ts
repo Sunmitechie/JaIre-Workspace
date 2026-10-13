@@ -29,6 +29,10 @@ app.use(
 
 app.use(cors());
 
+app.get("/", (_req, res) => {
+  res.json({ status: "ok", service: "jaire-api-gateway" });
+});
+
 // Forward /jaire/* and /api/jaire/* requests to the Python FastAPI service on port 8000.
 // Runs BEFORE body parsers so raw request bodies are streamed intact.
 // In dev: Vite proxies /jaire/* directly here. In production: frontend calls /api/jaire/*.
@@ -102,11 +106,13 @@ app.get("/api/config", (_req, res) => {
 
 app.use("/api", router);
 
-// Initialize MQTT connection for IoT device management
-import("./services/mqtt").then(({ initMqtt }) => {
-  initMqtt();
-}).catch((err) => {
-  console.error("[MQTT] Failed to initialize:", err.message);
-});
+// Avoid connecting to the public broker in test and smoke environments.
+if (process.env["NODE_ENV"] !== "test") {
+  import("./services/mqtt").then(({ initMqtt }) => {
+    initMqtt();
+  }).catch((err) => {
+    console.error("[MQTT] Failed to initialize:", err.message);
+  });
+}
 
 export default app;
