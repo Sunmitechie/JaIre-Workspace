@@ -7,10 +7,14 @@
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
-    "test:ci": "pnpm -r test"
+    "test:ci": "pnpm -r test",
+    "lint": "eslint . --max-warnings 0"
   },
   "private": true,
   "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^8.57.1",
     "typescript": "~5.9.2",
     "prettier": "^3.8.1"
   }
