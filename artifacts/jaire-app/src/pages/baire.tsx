@@ -1,113 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Volume2, VolumeX, Keyboard, X, ExternalLink, RefreshCw, Users, Zap, ArrowRight } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Send } from "lucide-react";
 import { getUser } from "@/lib/auth";
 import { WalletPanel } from "@/components/wallet-panel";
-import { Link } from "wouter";
-
-import theHubImg from "@/assets/the-hub.png";
-import foundersSuiteImg from "@/assets/founders-suite.png";
-import blockchainLoungeImg from "@/assets/blockchain-lounge.png";
-import boardRoomImg from "@/assets/board-room.png";
+import Conversation from "./baire/Conversation";
+import Welcome from "./baire/Welcome";
+import type { Message } from "./baire/content";
+import type { BaireState, OrbGlow } from "./baire/types";
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
-
-const WORKSPACE_DATA: Record<string, {
-  name: string; image: string; description: string;
-  hourly_rate_ngn: number; daily_rate_ngn: number; capacity: number;
-  amenities: string[]; id: string;
-}> = {
-  "ws-001": {
-    id: "ws-001", name: "The Hub — Open Floor", image: theHubImg,
-    description: "Vibrant open coworking area with high-speed Wi-Fi, natural lighting, and a buzzing community of builders.",
-    hourly_rate_ngn: 1500, daily_rate_ngn: 8000, capacity: 40,
-    amenities: ["High-speed Wi-Fi", "Power outlets", "Coffee bar", "Printing", "Lockers"],
-  },
-  "ws-002": {
-    id: "ws-002", name: "Founders Suite — Private Office", image: foundersSuiteImg,
-    description: "Fully equipped private office for focused deep work. Perfect for solo founders and small teams.",
-    hourly_rate_ngn: 3500, daily_rate_ngn: 18000, capacity: 4,
-    amenities: ["Dedicated desk", "Meeting room access", "Wi-Fi", "Climate control", "Whiteboard"],
-  },
-  "ws-003": {
-    id: "ws-003", name: "Blockchain Lounge — Crypto Corner", image: blockchainLoungeImg,
-    description: "Our signature space for Web3 builders — multiple monitors, fast internet, and a community of on-chain natives.",
-    hourly_rate_ngn: 2500, daily_rate_ngn: 12000, capacity: 12,
-    amenities: ["Dual monitors", "Ultra-fast Wi-Fi (1Gbps)", "Hardware wallet-friendly", "24/7 access", "Community Slack"],
-  },
-  "ws-004": {
-    id: "ws-004", name: "Board Room — Premium Meeting", image: boardRoomImg,
-    description: "Impress your clients and investors in our premium conference room with AV setup and whiteboard wall.",
-    hourly_rate_ngn: 8000, daily_rate_ngn: 50000, capacity: 12,
-    amenities: ["Projector & screen", "Video conferencing", "Whiteboard wall", "Catering available", "Receptionist"],
-  },
-};
-
-function extractWorkspaceIds(text: string): string[] {
-  const matches = [...text.matchAll(/\[\[WS:(ws-\d+)\]\]/gi)];
-  return [...new Set(matches.map((m) => m[1]!.toLowerCase()))];
-}
-
-function stripWorkspaceTags(text: string): string {
-  return text.replace(/\[\[WS:ws-\d+\]\]/gi, "").trim();
-}
-
-function WorkspaceCard({ wsId }: { wsId: string }) {
-  const ws = WORKSPACE_DATA[wsId];
-  if (!ws) return null;
-  return (
-    <Link href={`/workspaces`}>
-      <div
-        className="mt-3 rounded-2xl overflow-hidden cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.99] w-full max-w-xs"
-        style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)" }}
-      >
-        <div className="relative h-36 overflow-hidden">
-          <img src={ws.image} alt={ws.name} className="w-full h-full object-cover" />
-          <div className="absolute inset-0" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 60%)" }} />
-          <div className="absolute bottom-2 left-3 right-3">
-            <div className="text-white text-[13px] font-bold leading-tight">{ws.name}</div>
-          </div>
-        </div>
-        <div className="px-3 py-2.5 space-y-2">
-          <p className="text-[11px] text-muted-foreground leading-snug line-clamp-2">{ws.description}</p>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <Users className="w-2.5 h-2.5" />
-              {ws.capacity} seats
-            </div>
-            <div className="text-primary font-bold text-[12px]">
-              ₦{ws.hourly_rate_ngn.toLocaleString()}<span className="font-normal text-[10px] text-muted-foreground">/hr</span>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {ws.amenities.slice(0, 3).map((a) => (
-              <span key={a} className="px-1.5 py-0.5 rounded-full text-[9px] font-medium"
-                style={{ background: "rgba(255,170,0,0.08)", color: "rgba(255,170,0,0.8)", border: "1px solid rgba(255,170,0,0.15)" }}>
-                {a}
-              </span>
-            ))}
-            {ws.amenities.length > 3 && (
-              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-medium"
-                style={{ background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.4)", border: "1px solid rgba(255,255,255,0.08)" }}>
-                +{ws.amenities.length - 3} more
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-1 text-[10px] font-semibold pt-0.5"
-            style={{ color: "rgba(255,170,0,0.9)" }}>
-            <Zap className="w-2.5 h-2.5" /> Book with Baire <ArrowRight className="w-2.5 h-2.5 ml-auto opacity-50" />
-          </div>
-        </div>
-      </div>
-    </Link>
-  );
-}
-
-interface Message {
-  role: "user" | "baire";
-  content: string;
-  isStreaming?: boolean;
-}
 
 async function createConversation(): Promise<number> {
   const res = await fetch(`${BASE_URL}/api/baire/conversations`, {
@@ -116,33 +16,6 @@ async function createConversation(): Promise<number> {
     body: JSON.stringify({ title: "JaIre Session" }),
   });
   return (await res.json()).id;
-}
-
-const CHIPS = [
-  "Book me a hot desk now",
-  "What spaces are available?",
-  "Find me a quiet private room",
-  "What's my account balance?",
-];
-
-type BaireState = "idle" | "listening" | "processing" | "speaking";
-
-function timeGreeting() {
-  const h = new Date().getHours();
-  if (h < 12) return "Good morning";
-  if (h < 17) return "Good afternoon";
-  return "Good evening";
-}
-
-function extractPaymentUrl(text: string): string | null {
-  const match = text.match(/https?:\/\/(?:checkout\.)?paystack\.[^\s)>"]+/i)
-    ?? text.match(/https?:\/\/[^\s)>"]*paystack[^\s)>"]+/i);
-  return match?.[0] ?? null;
-}
-
-function extractSolanaExplorerUrl(text: string): string | null {
-  const match = text.match(/https?:\/\/explorer\.solana\.com\/tx\/[^\s)>"]+/i);
-  return match?.[0] ?? null;
 }
 
 async function playAudioBlob(blob: Blob, audioRef: React.MutableRefObject<HTMLAudioElement | null>): Promise<void> {
@@ -492,277 +365,44 @@ export default function Baire() {
         />
       </div>
 
-      {/* ─── WELCOME STATE ─── */}
       {isWelcome && (
-        <div className="flex-1 flex flex-col items-center justify-center px-6 text-center relative z-10">
-          {convInitError && (
-            <div className="mb-6 flex items-center gap-3 px-4 py-3 rounded-2xl text-[13px]"
-              style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", color: "rgba(252,165,165,0.9)" }}>
-              <span>Couldn't connect to Baire. Check your network.</span>
-              <button onClick={initConversation}
-                className="flex items-center gap-1.5 font-semibold hover:opacity-80 transition-opacity shrink-0">
-                <RefreshCw className="w-3 h-3" />
-                Retry
-              </button>
-            </div>
-          )}
-          <div className="mb-10">
-            <p className="text-[13px] font-medium mb-3 tracking-widest uppercase"
-              style={{ color: "rgba(255,170,0,0.6)" }}>
-              {timeGreeting()}
-            </p>
-            <h1 className="font-bold leading-tight mb-4"
-              style={{
-                fontSize: "clamp(2rem, 6vw, 3.2rem)",
-                background: "linear-gradient(135deg, #ffffff 0%, rgba(255,255,255,0.75) 100%)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-              }}>
-              Hey {firstName},
-            </h1>
-            <h2 className="font-bold leading-snug mb-5"
-              style={{
-                fontSize: "clamp(1.5rem, 5vw, 2.4rem)",
-                background: "linear-gradient(135deg, hsl(43 100% 52%) 0%, hsl(262 83% 72%) 60%, hsl(199 93% 65%) 100%)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-              }}>
-              What space are you<br />looking to book today?
-            </h2>
-            <p className="text-[15px] text-muted-foreground max-w-xs mx-auto leading-relaxed">
-              Give me a voice command and I'll book it right away.
-            </p>
-          </div>
-
-          {/* Orb */}
-          <div className="flex flex-col items-center gap-4 mb-10">
-            {baireState === "listening" && (
-              <div className="flex items-center gap-[3px] h-7">
-                {Array.from({ length: 13 }).map((_, i) => (
-                  <div key={i} className="rounded-full bg-primary"
-                    style={{
-                      width: "3px",
-                      height: `${8 + Math.abs(Math.sin((i / 12) * Math.PI * 2)) * 20}px`,
-                      animation: `baire-wave ${0.4 + (i % 4) * 0.1}s ease-in-out infinite alternate`,
-                      animationDelay: `${i * 50}ms`,
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-
-            <button onClick={handleOrbPress} disabled={baireState === "processing"}
-              className={cn("relative rounded-full flex items-center justify-center transition-all duration-500 select-none",
-                baireState === "idle" && "hover:scale-105 active:scale-95",
-                baireState === "listening" && "scale-110")}
-              style={{ width: orbSize, height: orbSize, background: orbGlow.bg, boxShadow: orbGlow.shadow }}>
-              {baireState === "processing" ? (
-                <div className="w-9 h-9 rounded-full border-[2.5px] animate-spin"
-                  style={{ borderColor: "rgba(255,255,255,0.15)", borderTopColor: "rgba(255,255,255,0.9)" }} />
-              ) : (
-                <span className="font-bold text-2xl"
-                  style={{ color: baireState === "listening" ? "hsl(220 40% 8%)" : "white", letterSpacing: "-0.02em" }}>
-                  B
-                </span>
-              )}
-              {baireState === "listening" && (
-                <div className="absolute inset-0 rounded-full border-2 border-primary/25 animate-ping" />
-              )}
-            </button>
-
-            <p className="text-[13px] text-muted-foreground">{stateLabel}</p>
-
-            <div className="flex items-center gap-5">
-              <button onClick={() => setIsMuted(!isMuted)}
-                className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors">
-                {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                {isMuted ? "Unmute" : "Mute"}
-              </button>
-              <button onClick={() => setShowInput((v) => !v)}
-                className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors">
-                <Keyboard className="w-3.5 h-3.5" />
-                Type instead
-              </button>
-            </div>
-          </div>
-
-          {/* Quick chips */}
-          <div className="flex flex-wrap gap-2 justify-center max-w-sm">
-            {CHIPS.map((chip) => (
-              <button key={chip} onClick={() => sendTextMessage(chip)}
-                disabled={baireState !== "idle"}
-                className="px-4 py-2 rounded-full text-[13px] font-medium transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-40"
-                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", backdropFilter: "blur(12px)" }}>
-                {chip}
-              </button>
-            ))}
-          </div>
-        </div>
+        <Welcome
+          firstName={firstName}
+          conversationError={convInitError}
+          onRetry={initConversation}
+          state={baireState}
+          listeningLabel={listeningLabel}
+          stateLabel={stateLabel}
+          orbSize={orbSize}
+          orbGlow={orbGlow}
+          onOrbPress={handleOrbPress}
+          isMuted={isMuted}
+          setIsMuted={setIsMuted}
+          showInput={showInput}
+          setShowInput={setShowInput}
+          sendTextMessage={sendTextMessage}
+        />
       )}
 
-      {/* ─── CONVERSATION STATE ─── */}
       {!isWelcome && (
-        <>
-          <div className="shrink-0 px-6 pt-5 pb-4 flex items-center gap-3"
-            style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-            <div className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0"
-              style={{ background: orbGlow.bg, boxShadow: baireState !== "idle" ? orbGlow.shadow : "none",
-                color: baireState === "listening" ? "hsl(220 40% 8%)" : "white", transition: "all 0.4s ease" }}>
-              B
-            </div>
-            <div>
-              <div className="font-semibold text-sm leading-none">Baire</div>
-              <div className="text-[11px] text-muted-foreground mt-0.5">
-                {baireState === "listening" ? listeningLabel :
-                 baireState === "processing" ? "Thinking…" :
-                 baireState === "speaking" ? "Speaking…" : "Online"}
-              </div>
-            </div>
-          </div>
-
-          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4 relative z-10"
-            style={{ scrollBehavior: "smooth" }}>
-            <div className="max-w-2xl mx-auto space-y-4">
-              {messages.map((msg, i) => {
-                const isBaire = msg.role === "baire";
-                const settled = isBaire && !msg.isStreaming;
-                const paymentUrl = settled ? extractPaymentUrl(msg.content) : null;
-                const solanaUrl = settled ? extractSolanaExplorerUrl(msg.content) : null;
-                const wsIds = settled ? extractWorkspaceIds(msg.content) : [];
-                const displayText = isBaire ? stripWorkspaceTags(msg.content) : msg.content;
-                return (
-                  <div key={i} className={cn("flex gap-3", msg.role === "user" ? "justify-end" : "justify-start")}>
-                    {isBaire && (
-                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-1"
-                        style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.3), rgba(56,189,248,0.3))",
-                          border: "1px solid rgba(139,92,246,0.3)", color: "hsl(262 83% 76%)" }}>
-                        B
-                      </div>
-                    )}
-                    <div className={cn("rounded-2xl text-[15px] leading-relaxed max-w-[82%]",
-                      msg.role === "user" ? "rounded-tr-sm px-4 py-3" : "rounded-tl-sm px-4 py-3")}
-                      style={msg.role === "user"
-                        ? { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.09)" }
-                        : { background: "rgba(139,92,246,0.09)", border: "1px solid rgba(139,92,246,0.2)" }}>
-                      {displayText || (msg.isStreaming ? null : "…")}
-                      {msg.isStreaming && !msg.content && (
-                        <div className="flex gap-1.5 py-1">
-                          {[0, 1, 2].map((j) => (
-                            <div key={j} className="w-2 h-2 rounded-full bg-current opacity-40 animate-bounce"
-                              style={{ animationDelay: `${j * 150}ms` }} />
-                          ))}
-                        </div>
-                      )}
-                      {msg.isStreaming && msg.content && (
-                        <span className="inline-block w-0.5 h-4 bg-current opacity-60 ml-0.5 animate-pulse align-bottom" />
-                      )}
-                      {/* Workspace preview cards */}
-                      {wsIds.length > 0 && (
-                        <div className={cn("flex gap-3 flex-wrap", wsIds.length > 1 ? "mt-3" : "")}>
-                          {wsIds.map((id) => <WorkspaceCard key={id} wsId={id} />)}
-                        </div>
-                      )}
-                      {/* Paystack payment button */}
-                      {paymentUrl && (
-                        <a href={paymentUrl} target="_blank" rel="noopener noreferrer"
-                          className="mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold transition-all hover:scale-[1.02] active:scale-95 w-fit"
-                          style={{ background: "linear-gradient(135deg, hsl(43 100% 50%), hsl(38 100% 44%))", color: "hsl(220 40% 5%)" }}>
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          Pay Now
-                        </a>
-                      )}
-                      {/* Solana Explorer on-chain tx button */}
-                      {solanaUrl && (
-                        <a href={solanaUrl} target="_blank" rel="noopener noreferrer"
-                          className="mt-3 flex items-center gap-2 px-3 py-2 rounded-xl text-[12px] font-semibold font-mono transition-all hover:scale-[1.02] active:scale-95 w-fit"
-                          style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.3)", color: "#34d399" }}>
-                          <ExternalLink className="w-3 h-3 shrink-0" />
-                          View on Solana Explorer
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="shrink-0 px-4 pb-7 pt-3 relative z-10"
-            style={{ background: "linear-gradient(to top, rgba(0,0,0,0.6) 0%, transparent 100%)", backdropFilter: "blur(16px)" }}>
-            <div className="max-w-2xl mx-auto">
-              {showInput && (
-                <form onSubmit={handleTextSend} className="flex items-center gap-2 mb-3">
-                  <input ref={inputRef} value={inputText} onChange={(e) => setInputText(e.target.value)}
-                    placeholder="Type a message…"
-                    className="flex-1 h-11 px-4 rounded-2xl text-sm placeholder:text-muted-foreground focus:outline-none transition-all"
-                    style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "white" }}
-                    disabled={baireState === "processing"} />
-                  <button type="submit" disabled={!inputText.trim() || baireState === "processing"}
-                    className="w-11 h-11 rounded-2xl flex items-center justify-center transition-all disabled:opacity-30"
-                    style={{ background: "rgba(255,170,0,0.15)", color: "#FFAA00", border: "1px solid rgba(255,170,0,0.25)" }}>
-                    <Send className="w-4 h-4" />
-                  </button>
-                  <button type="button" onClick={() => setShowInput(false)}
-                    className="w-11 h-11 rounded-2xl flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
-                    style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
-                    <X className="w-4 h-4" />
-                  </button>
-                </form>
-              )}
-
-              <div className="flex items-center justify-center gap-5">
-                {baireState === "listening" && (
-                  <div className="flex items-center gap-[3px]">
-                    {Array.from({ length: 9 }).map((_, i) => (
-                      <div key={i} className="rounded-full bg-primary"
-                        style={{
-                          width: "3px",
-                          height: `${6 + Math.abs(Math.sin((i / 8) * Math.PI * 2)) * 16}px`,
-                          animation: `baire-wave ${0.4 + (i % 3) * 0.12}s ease-in-out infinite alternate`,
-                          animationDelay: `${i * 55}ms`,
-                        }}
-                      />
-                    ))}
-                  </div>
-                )}
-
-                <button onClick={handleOrbPress} disabled={baireState === "processing"}
-                  className={cn("relative rounded-full flex items-center justify-center transition-all duration-400 select-none",
-                    baireState === "idle" && "hover:scale-105 active:scale-95",
-                    baireState === "listening" && "scale-110")}
-                  style={{ width: orbSize, height: orbSize, background: orbGlow.bg, boxShadow: orbGlow.shadow }}>
-                  {baireState === "processing" ? (
-                    <div className="w-7 h-7 rounded-full border-2 animate-spin"
-                      style={{ borderColor: "rgba(255,255,255,0.15)", borderTopColor: "rgba(255,255,255,0.9)" }} />
-                  ) : (
-                    <span className="font-bold text-lg"
-                      style={{ color: baireState === "listening" ? "hsl(220 40% 8%)" : "white" }}>
-                      B
-                    </span>
-                  )}
-                  {baireState === "listening" && (
-                    <div className="absolute inset-0 rounded-full border-2 border-primary/25 animate-ping" />
-                  )}
-                </button>
-
-                <div className="flex flex-col gap-1.5 items-center">
-                  <button onClick={() => setIsMuted(!isMuted)}
-                    className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
-                    {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
-                    {isMuted ? "Unmute" : "Mute"}
-                  </button>
-                  <button onClick={() => setShowInput((v) => !v)}
-                    className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
-                    <Keyboard className="w-3 h-3" />
-                    Type
-                  </button>
-                </div>
-              </div>
-
-              <p className="text-center text-[11px] text-muted-foreground mt-3">{stateLabel}</p>
-            </div>
-          </div>
-        </>
+        <Conversation
+          messages={messages}
+          scrollRef={scrollRef}
+          inputRef={inputRef}
+          state={baireState}
+          listeningLabel={listeningLabel}
+          orbGlow={orbGlow}
+          orbSize={orbSize}
+          stateLabel={stateLabel}
+          onOrbPress={handleOrbPress}
+          isMuted={isMuted}
+          onToggleMute={() => setIsMuted(!isMuted)}
+          showInput={showInput}
+          setShowInput={setShowInput}
+          inputText={inputText}
+          setInputText={setInputText}
+          onTextSubmit={handleTextSend}
+        />
       )}
 
       {/* Welcome state text input */}
