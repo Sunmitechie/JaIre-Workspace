@@ -1,4 +1,4 @@
-import type { Device, Workspace } from "./org-dashboard";
+import type { Device, Workspace } from "./org/types";
 
 type Props = {
   devices: Device[];
