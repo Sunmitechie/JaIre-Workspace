@@ -1,4 +1,4 @@
-import type { Workspace } from "./org-dashboard";
+import type { Workspace } from "./org/types";
 
 type Props = {
   workspaces: Workspace[];

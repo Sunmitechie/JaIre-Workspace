@@ -1,82 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
+import OverviewTab from "./admin/OverviewTab";
+import OrganizationsTab from "./admin/OrganizationsTab";
+import type { ActivityEvent, BookingRow, OrgRow, Overview } from "./admin/types";
 
 const BASE_URL = import.meta.env.BASE_URL?.replace(/\/$/, "") || "";
 const API = `${BASE_URL}/api`;
 
-// ── Types ──────────────────────────────────────────────────────────────────
-interface Overview {
-  total_organizations: number;
-  total_workspaces: number;
-  total_bookings: number;
-  total_users: number;
-  active_sessions: number;
-  today_checkins: number;
-  total_revenue_usdc: number;
-  platform_fee_usdc: number;
-  total_escrow_usdc: number;
-  total_revenue_ngn: number;
-  vault_balance_usdc: number;
-  vault_sol: number;
-  vault_address: string;
-  kyc_counts: { pending: number; submitted: number; verified: number; rejected: number };
-}
-
-interface OrgRow {
-  id: string;
-  business_name: string;
-  owner_name: string | null;
-  owner_email: string;
-  owner_wallet: string | null;
-  kyc_status: "pending" | "submitted" | "verified" | "rejected";
-  org_type: string | null;
-  country: string | null;
-  state: string | null;
-  workspace_count: number;
-  booking_count: number;
-  active_sessions: number;
-  revenue_usdc: number;
-  revenue_ngn: number;
-  created_at: string;
-  kyc_submitted_at: string | null;
-  kyc_verified_at: string | null;
-}
-
-interface BookingRow {
-  id: string;
-  workspace_name: string | null;
-  user_name: string;
-  user_email: string | null;
-  status: string;
-  check_in_time: string | null;
-  check_out_time: string | null;
-  planned_hours: number;
-  actual_seconds: number | null;
-  escrow_usdc: number | null;
-  billed_usdc: number | null;
-  refunded_usdc: number | null;
-  payment_method: string;
-  settle_tx: string | null;
-  created_at: string;
-}
-
-interface ActivityEvent {
-  id: string;
-  eventType: string;
-  workspaceName: string | null;
-  userId: string | null;
-  userName: string | null;
-  amountUsdc: number | null;
-  amountNgn: number | null;
-  createdAt: string;
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────────
-const KYC_COLORS: Record<string, string> = {
-  pending:   "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-  submitted: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-  verified:  "bg-green-500/20 text-green-400 border-green-500/30",
-  rejected:  "bg-red-500/20 text-red-400 border-red-500/30",
-};
 const STATUS_COLORS: Record<string, string> = {
   active:    "bg-green-500/20 text-green-400",
   completed: "bg-gray-500/20 text-gray-400",
@@ -84,13 +14,6 @@ const STATUS_COLORS: Record<string, string> = {
   pending:   "bg-yellow-500/20 text-yellow-400",
   cancelled: "bg-red-500/20 text-red-400",
 };
-const EVENT_ICONS: Record<string, string> = {
-  check_in:  "↗",
-  check_out: "↙",
-  payment:   "₿",
-  refund:    "↩",
-};
-
 function fmtTime(iso: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("en-NG", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -101,11 +24,6 @@ function fmtSecs(s: number | null) {
   const m = Math.floor((s % 3600) / 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
-function shortKey(k: string | null) {
-  if (!k) return "—";
-  return `${k.slice(0, 6)}…${k.slice(-4)}`;
-}
-
 // ── Component ──────────────────────────────────────────────────────────────
 export default function AdminDashboard() {
   const [adminKey, setAdminKey]       = useState(() => localStorage.getItem("jaire_admin_key") ?? "");
@@ -213,15 +131,6 @@ export default function AdminDashboard() {
     );
   }
 
-  // ── Metric card ─────────────────────────────────────────────────────────
-  const MetricCard = ({ label, value, sub, accent }: { label: string; value: string | number; sub?: string; accent?: string }) => (
-    <div className="bg-[#111] border border-white/10 rounded-2xl p-5">
-      <p className="text-xs text-gray-500 mb-1">{label}</p>
-      <p className={`text-2xl font-bold ${accent ?? "text-white"}`}>{value}</p>
-      {sub && <p className="text-xs text-gray-500 mt-1">{sub}</p>}
-    </div>
-  );
-
   // ── Tabs ─────────────────────────────────────────────────────────────────
   const TABS = [
     { key: "overview",  label: "Overview" },
@@ -289,213 +198,15 @@ export default function AdminDashboard() {
           ))}
         </div>
 
-        {/* ── OVERVIEW TAB ──────────────────────────────────────────────── */}
-        {activeTab === "overview" && overview && (
-          <div className="space-y-6">
-            {/* Vault card */}
-            <div className="bg-gradient-to-br from-purple-900/40 to-blue-900/40 border border-purple-500/30 rounded-2xl p-6">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs text-purple-300 mb-1">JaIre Vault</p>
-                  <p className="text-4xl font-bold text-white">
-                    ${overview.vault_balance_usdc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    <span className="text-lg text-purple-300 ml-1">USDC</span>
-                  </p>
-                  <p className="text-sm text-purple-400 mt-1">{overview.vault_sol.toFixed(4)} SOL</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs text-gray-500 mb-1">Vault Address</p>
-                  <a
-                    href={`https://explorer.solana.com/address/${overview.vault_address}?cluster=devnet`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-purple-400 hover:text-purple-300 font-mono"
-                  >
-                    {shortKey(overview.vault_address)}
-                  </a>
-                </div>
-              </div>
-              <div className="mt-4 pt-4 border-t border-purple-500/20 grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-xs text-gray-500">Platform fees collected (15%)</p>
-                  <p className="text-lg font-bold text-green-400">
-                    ${overview.platform_fee_usdc.toFixed(2)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500">Locked in active escrow</p>
-                  <p className="text-lg font-bold text-blue-400">
-                    ${overview.total_escrow_usdc.toFixed(2)}
-                  </p>
-                </div>
-              </div>
-            </div>
+        {activeTab === "overview" && overview && <OverviewTab overview={overview} activity={activity} />}
 
-            {/* Metrics grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <MetricCard label="Organizations"    value={overview.total_organizations} />
-              <MetricCard label="Workspaces"       value={overview.total_workspaces} />
-              <MetricCard label="Total Bookings"   value={overview.total_bookings} />
-              <MetricCard label="Registered Users" value={overview.total_users} />
-              <MetricCard label="Active Sessions"  value={overview.active_sessions}  accent="text-green-400" />
-              <MetricCard label="Today Check-ins"  value={overview.today_checkins} />
-              <MetricCard label="Total Revenue"    value={`$${overview.total_revenue_usdc.toFixed(2)}`} sub="USDC" accent="text-purple-400" />
-              <MetricCard label="Revenue (NGN)"    value={`₦${overview.total_revenue_ngn.toLocaleString()}`} />
-            </div>
-
-            {/* KYC counts */}
-            <div className="bg-[#111] border border-white/10 rounded-2xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-4">KYC Status Distribution</h3>
-              <div className="grid grid-cols-4 gap-3">
-                {Object.entries(overview.kyc_counts).map(([status, count]) => (
-                  <div key={status} className="text-center">
-                    <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold border ${KYC_COLORS[status] ?? ""}`}>
-                      {status}
-                    </span>
-                    <p className="text-2xl font-bold text-white mt-2">{count}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Recent activity */}
-            <div className="bg-[#111] border border-white/10 rounded-2xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-4">Live Activity Feed</h3>
-              {activity.length === 0 ? (
-                <p className="text-gray-600 text-sm text-center py-8">No recent activity</p>
-              ) : (
-                <div className="space-y-2">
-                  {activity.slice(0, 10).map((ev) => (
-                    <div key={ev.id} className="flex items-center gap-3 py-2 border-b border-white/5 last:border-0">
-                      <span className="w-7 h-7 rounded-full bg-white/5 flex items-center justify-center text-sm flex-shrink-0">
-                        {EVENT_ICONS[ev.eventType] ?? "·"}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs text-white">
-                          <span className="text-gray-400">{ev.userName ?? ev.userId ?? "User"}</span>
-                          {" "}
-                          <span className="capitalize">{ev.eventType.replace("_", " ")}</span>
-                          {ev.workspaceName && <span className="text-gray-500"> @ {ev.workspaceName}</span>}
-                        </p>
-                        {ev.amountUsdc && (
-                          <p className="text-xs text-green-400">${ev.amountUsdc.toFixed(2)} USDC</p>
-                        )}
-                      </div>
-                      <p className="text-[10px] text-gray-600 flex-shrink-0">{fmtTime(ev.createdAt)}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── ORGS TAB ──────────────────────────────────────────────────── */}
         {activeTab === "orgs" && (
-          <div className="space-y-3">
-            {orgs.length === 0 ? (
-              <p className="text-gray-600 text-sm text-center py-12">No organizations yet</p>
-            ) : (
-              orgs.map((org) => (
-                <div key={org.id} className="bg-[#111] border border-white/10 rounded-2xl p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    {/* Left */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <h3 className="text-white font-semibold text-sm">{org.business_name}</h3>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${KYC_COLORS[org.kyc_status] ?? ""}`}>
-                          {org.kyc_status}
-                        </span>
-                        {org.org_type && (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] text-gray-500 border border-white/10">
-                            {org.org_type.replace("_", " ")}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-gray-400">{org.owner_email}</p>
-                      {org.owner_name && <p className="text-xs text-gray-500">{org.owner_name}</p>}
-                      {(org.state || org.country) && (
-                        <p className="text-xs text-gray-600 mt-0.5">
-                          {[org.state, org.country].filter(Boolean).join(", ")}
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Stats */}
-                    <div className="flex gap-4 text-center flex-shrink-0">
-                      <div>
-                        <p className="text-xs text-gray-500">Spaces</p>
-                        <p className="text-sm font-bold text-white">{org.workspace_count}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Bookings</p>
-                        <p className="text-sm font-bold text-white">{org.booking_count}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Revenue</p>
-                        <p className="text-sm font-bold text-green-400">${org.revenue_usdc.toFixed(2)}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Wallet */}
-                  {org.owner_wallet && (
-                    <div className="mt-3 pt-3 border-t border-white/5">
-                      <p className="text-[10px] text-gray-600">Wallet</p>
-                      <a
-                        href={`https://explorer.solana.com/address/${org.owner_wallet}?cluster=devnet`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs font-mono text-purple-400 hover:text-purple-300"
-                      >
-                        {org.owner_wallet}
-                      </a>
-                    </div>
-                  )}
-
-                  {/* KYC actions */}
-                  <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-2 flex-wrap">
-                    {kycMsg[org.id] ? (
-                      <p className="text-xs text-green-400">{kycMsg[org.id]}</p>
-                    ) : (
-                      <>
-                        {org.kyc_status !== "verified" && (
-                          <button
-                            onClick={() => updateKyc(org.id, "verified")}
-                            disabled={kycUpdating === org.id}
-                            className="px-3 py-1.5 rounded-lg bg-green-500/20 text-green-400 border border-green-500/30 text-xs font-semibold hover:bg-green-500/30 transition disabled:opacity-40"
-                          >
-                            ✓ Approve KYC
-                          </button>
-                        )}
-                        {org.kyc_status !== "rejected" && (
-                          <button
-                            onClick={() => updateKyc(org.id, "rejected")}
-                            disabled={kycUpdating === org.id}
-                            className="px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-semibold hover:bg-red-500/30 transition disabled:opacity-40"
-                          >
-                            ✗ Reject KYC
-                          </button>
-                        )}
-                        {org.kyc_status !== "pending" && (
-                          <button
-                            onClick={() => updateKyc(org.id, "pending")}
-                            disabled={kycUpdating === org.id}
-                            className="px-3 py-1.5 rounded-lg bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 text-xs font-semibold hover:bg-yellow-500/30 transition disabled:opacity-40"
-                          >
-                            Reset to Pending
-                          </button>
-                        )}
-                      </>
-                    )}
-                    <span className="text-[10px] text-gray-600 ml-auto">
-                      Joined {fmtTime(org.created_at)}
-                    </span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+          <OrganizationsTab
+            organizations={orgs}
+            kycUpdating={kycUpdating}
+            kycMessages={kycMsg}
+            onUpdateKyc={updateKyc}
+          />
         )}
 
         {/* ── BOOKINGS TAB ──────────────────────────────────────────────── */}
