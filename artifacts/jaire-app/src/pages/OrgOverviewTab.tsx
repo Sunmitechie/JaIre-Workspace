@@ -1,5 +1,5 @@
 import { QRCodeSVG } from "qrcode.react";
-import type { Booking, Metric, OrgUser } from "./org-dashboard";
+import type { Booking, Metric, OrgUser } from "./org/types";
 
 const STATUS_COLORS: Record<string, string> = {
   active: "bg-green-500/20 text-green-400 border-green-500/30",
