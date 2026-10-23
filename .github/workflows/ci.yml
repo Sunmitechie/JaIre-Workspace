@@ -90,7 +90,7 @@ jobs:
         run: uv sync
 
       - name: Enforce Python coverage
-        run: uv run pytest artifacts/jaire-python/tests/ -q --tb=short --cov=app --cov-report=term-missing --cov-fail-under=50
+        run: uv run pytest artifacts/jaire-python/tests/ -q --tb=short --cov=app --cov-report=term-missing --cov-fail-under=70
 
   smoke-test:
     name: Docker startup smoke test
