@@ -110,6 +110,36 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.test.yml down -v
 
+  first-run:
+    name: Fresh checkout bootstrap
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fresh repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+        with:
+          version: "latest"
+
+      - name: Bootstrap and smoke test without manual environment setup
+        run: test ! -e .env && bash scripts/dev-up.sh && bash scripts/smoke.sh
+
+      - name: Stop bootstrap services
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
   # ── Rust / Anchor: Build Smart Contract ────────────────────────────────
   rust-build:
     name: Rust / Anchor Build
@@ -212,7 +242,7 @@ jobs:
   # ── Summary ────────────────────────────────────────────────────────────
   ci-summary:
     name: CI Summary
-    needs: [node-build, python-build, rust-build, security-audit, lint, smoke-test]
+    needs: [node-build, python-build, rust-build, security-audit, lint, smoke-test, first-run]
     runs-on: ubuntu-latest
     if: always()
 
@@ -222,7 +252,8 @@ jobs:
           if [ "${{ needs.node-build.result }}" == "failure" ] || \
              [ "${{ needs.python-build.result }}" == "failure" ] || \
              [ "${{ needs.smoke-test.result }}" == "failure" ] || \
-             [ "${{ needs.rust-build.result }}" == "failure" ]; then
+             [ "${{ needs.rust-build.result }}" == "failure" ] || \
+             [ "${{ needs.first-run.result }}" == "failure" ]; then
             echo "❌ CI failed"
             exit 1
           fi
