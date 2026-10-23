@@ -4,6 +4,17 @@ export type PaystackMockResponse = {
   data: Record<string, unknown>;
 };
 
+type PaystackMockHttpResponse = {
+  ok: boolean;
+  status: number;
+  body: PaystackMockResponse;
+};
+
+type PaystackMockFetchOptions = {
+  initialize?: Partial<PaystackMockHttpResponse>;
+  verify?: Partial<PaystackMockHttpResponse>;
+};
+
 export const paystackMockInitializeResponse: PaystackMockResponse = {
   status: true,
   message: "Authorization URL created",
@@ -43,20 +54,17 @@ export const paystackMockWebhookEvent = {
   },
 };
 
-export function createPaystackMockFetch() {
-  return async (_input: RequestInfo | URL, _init?: RequestInit) => ({
-    ok: true,
-    status: 200,
-    json: async () => {
-      const url = String(_input);
-      if (url.includes("transaction/initialize")) {
-        return paystackMockInitializeResponse;
-      }
-      if (url.includes("transaction/verify/")) {
-        return paystackMockVerifyResponse;
-      }
-      return paystackMockVerifyResponse;
-    },
-    text: async () => "",
-  });
+export function createPaystackMockFetch(options: PaystackMockFetchOptions = {}) {
+  return async (_input: RequestInfo | URL, _init?: RequestInit) => {
+    const response = String(_input).includes("transaction/initialize")
+      ? { ok: true, status: 200, body: paystackMockInitializeResponse, ...options.initialize }
+      : { ok: true, status: 200, body: paystackMockVerifyResponse, ...options.verify };
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: async () => response.body,
+      text: async () => "",
+    };
+  };
 }
