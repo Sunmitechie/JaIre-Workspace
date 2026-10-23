@@ -28,10 +28,10 @@ JaIre is a Web2.5 coworking platform monorepo that combines a React frontend, a 
 - pnpm
 - Python 3.11+
 - uv
-- PostgreSQL running locally or in your cloud provider
-- A Solana devnet RPC endpoint
 - Docker Engine with Docker Compose v2
 - Bash and curl for the startup and smoke scripts
+
+The smoke bootstrap provides its own PostgreSQL container and uses test-only service settings. A separate PostgreSQL instance, Solana RPC, and provider credentials are needed only for full local integrations.
 
 ## 1) Clone the repo
 
@@ -40,9 +40,32 @@ git clone <your-repository-url>
 cd JaIre-Workspace
 ```
 
-## 2) Install dependencies
+## 2) First-run smoke bootstrap
 
-Use pnpm for the monorepo and uv for the Python service:
+On a clean clone, start the local smoke stack without editing `.env` or supplying third-party credentials:
+
+```bash
+bash scripts/dev-up.sh
+bash scripts/smoke.sh
+```
+
+The bootstrap creates the root `.env` from `.env.example` only when `.env` does not exist, installs dependencies, and starts Postgres, FastAPI, and the Express gateway with test-only credentials. It does not connect to Paystack, Solana, Web3Auth, or the public MQTT broker. `scripts/smoke.sh` checks the Python docs, Python health endpoint, and Express gateway root. Stop the stack with:
+
+```bash
+docker compose -f docker-compose.test.yml down
+```
+
+## 3) Configure full local development
+
+The full app reads values from the root `.env` file. The smoke bootstrap creates it from `.env.example` automatically; real integrations require replacing their placeholders with valid credentials. Do not commit real credentials or secrets.
+
+```bash
+# Optional: edit .env at the repo root to enable real integrations
+```
+
+## 4) Install dependencies and start the full app manually
+
+If you are starting the individual services rather than the smoke stack, install dependencies first:
 
 ```bash
 corepack enable
@@ -50,43 +73,7 @@ pnpm install
 uv sync
 ```
 
-If `uv` is not installed yet:
-
-```bash
-pip install uv
-```
-
-## 3) Configure environment variables
-
-Manual local development reads values from the root `.env` file. Fill in the placeholders before starting the full app. The automated smoke stack uses test-only values and does not require a root `.env` file.
-
-```bash
-# Edit .env at the repo root
-```
-
-The root `.env` file is already set up with placeholder values for local development. Replace the sample values with your real local credentials and secrets only on your machine; do not commit those values.
-
-## 4) Start the smoke stack
-
-For a one-command startup check that needs no `.env` credentials, run:
-
-```bash
-bash scripts/dev-up.sh
-```
-
-This enables Corepack, installs the workspace dependencies, syncs the Python environment, and starts Postgres, FastAPI, and the Express gateway with test-only credentials. The stack does not connect to Paystack, Solana, Web3Auth, or the public MQTT broker. In a second terminal, verify the services with:
-
-```bash
-bash scripts/smoke.sh
-```
-
-The Python docs, Python health endpoint, and Express gateway root are checked. Stop the stack with `Ctrl+C`.
-
-To run the containerized Vitest suites instead, start the test profile:
-
-```bash
-docker compose -f docker-compose.test.yml --profile tests up --build
-```
+Then follow the service-specific commands below.
 
 ## 5) Start the full app manually
 
